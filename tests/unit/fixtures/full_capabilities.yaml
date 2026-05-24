@@ -1,0 +1,24 @@
+name: full-capabilities
+display_name: "Full-Capabilities Test Fixture"
+chip: esp32-s3
+firmware_path: ./firmware
+build_profiles: [debug]
+
+usb:
+  port_glob: "/dev/cu.usbmodem*"
+
+http:
+  enabled: true
+  port: 8081
+  discover_via: usb-info
+
+capabilities:
+  flash:      { transport: usb-cdc }
+  logs:       { transport: auto }
+  cmd:        { transport: usb-cdc }
+  screenshot: { transport: http }
+
+verbs:
+  - state
+  - restart
+  - log_level
