@@ -31,7 +31,6 @@ import click
 from cli.board import BOARDS_DIR, detect_board, resolve_usb_port
 from cli.daemon.lifecycle import ensure_daemon, fetch_events, socket_path_for
 
-
 # Map -level letters to numeric severity. The cube emits ESP_LOGx lines with
 # a leading single char ("D (123) tag: msg") so we filter at the host edge.
 LEVELS: dict[str, int] = {"D": 0, "I": 1, "W": 2, "E": 3}
@@ -172,7 +171,7 @@ async def _merge(queue: asyncio.Queue, *, no_color: bool, json_out: bool,
                 source, line = await asyncio.wait_for(
                     queue.get(), timeout=stop_after_idle_s
                 )
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 return
         else:
             source, line = await queue.get()
@@ -239,7 +238,7 @@ def run(ctx_obj: dict, follow: bool, since: str | None,
         await asyncio.gather(*producers)
         try:
             await asyncio.wait_for(merger, timeout=2.0)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             merger.cancel()
 
     try:

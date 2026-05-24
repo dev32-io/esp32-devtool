@@ -2,16 +2,15 @@ from __future__ import annotations
 
 import json
 import socket
+import tempfile
 import threading
 from pathlib import Path
 
 import pytest
-import tempfile
 
 from cli.board import load_manifest
-from cli.transport.usb_cdc import UsbCdcClient
 from cli.errors import VerbError
-
+from cli.transport.usb_cdc import UsbCdcClient
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

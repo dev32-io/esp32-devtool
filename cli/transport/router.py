@@ -1,14 +1,14 @@
 """Capability → transport resolution. Reads board manifest, gates on reachability."""
 from __future__ import annotations
 
-from enum import Enum
-from typing import Callable
+from collections.abc import Callable
+from enum import StrEnum
 
 from cli.board import BoardManifest
 from cli.errors import TransportUnavailable
 
 
-class Transport(str, Enum):
+class Transport(StrEnum):
     USB_CDC = "usb-cdc"
     HTTP = "http"
     AUTO = "auto"
@@ -39,8 +39,8 @@ def resolve_transport(
             raise TransportUnavailable(
                 f"HTTP unavailable for '{capability}' on {manifest.name}",
                 next_step=(
-                    f"confirm cube WiFi with `esp32-devtool logs --follow`, "
-                    f"then retry"
+                    "confirm cube WiFi with `esp32-devtool logs --follow`, "
+                    "then retry"
                 ),
             )
         return Transport.HTTP

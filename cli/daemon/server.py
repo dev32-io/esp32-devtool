@@ -17,21 +17,18 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import signal
 import socket
 import sys
 import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Optional
 
 import serial
 
 from cli.daemon.lifecycle import (
-    socket_path_for,
     pidfile_path_for,
-    logfile_path_for,
+    socket_path_for,
 )
 
 TAG = "esp32-devtool.daemon"
@@ -47,7 +44,7 @@ class CubeDaemon:
         self.port_name = port
         self.idle_seconds = idle_seconds
         self.last_activity = time.time()
-        self.ser: Optional[serial.Serial] = None
+        self.ser: serial.Serial | None = None
         # 20000 lines: generous ring buffer so the full boot trace
         # (ROM bootloader → WiFi connect → IDLE) is always available.
         # ~3 MB host RAM worst-case for a long-running daemon.
@@ -146,7 +143,7 @@ class CubeDaemon:
                     break
                 try:
                     conn, _ = srv.accept()
-                except socket.timeout:
+                except TimeoutError:
                     continue
                 self.last_activity = time.time()
                 threading.Thread(
@@ -183,7 +180,7 @@ class CubeDaemon:
             while True:
                 try:
                     chunk = conn.recv(65536)
-                except socket.timeout:
+                except TimeoutError:
                     break
                 if not chunk:
                     break
@@ -308,7 +305,7 @@ def _double_fork() -> None:
     os.setsid()
     if os.fork() != 0:
         os._exit(0)
-    sys.stdin = open(os.devnull, "r")
+    sys.stdin = open(os.devnull)
 
 
 def serve_argv() -> int:

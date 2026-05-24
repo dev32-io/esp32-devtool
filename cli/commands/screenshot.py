@@ -69,6 +69,7 @@ def run(ctx_obj: dict, out_path: str | None, fmt: str) -> int:
         if fmt == "jpeg":
             try:
                 from io import BytesIO
+
                 from PIL import Image
             except ImportError:
                 click.echo("[esp32-devtool] JPEG requires Pillow (pip install pillow)", err=True)

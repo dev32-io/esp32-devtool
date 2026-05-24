@@ -3,14 +3,13 @@ from __future__ import annotations
 
 import glob as glob_mod
 import os as _os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable
 
 import yaml
 
 from cli.errors import BoardNotFound
-
 
 # Repo-relative boards dir, resolved once at import time. Every command module
 # used to recompute this from its own `__file__`; centralizing keeps the path

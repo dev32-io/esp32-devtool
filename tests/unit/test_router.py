@@ -6,8 +6,7 @@ import pytest
 
 from cli.board import load_manifest
 from cli.errors import TransportUnavailable
-from cli.transport.router import resolve_transport, Transport
-
+from cli.transport.router import Transport, resolve_transport
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 

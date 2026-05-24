@@ -5,13 +5,13 @@ import glob as glob_mod
 import itertools
 import json
 import socket
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from cli.board import BoardManifest
 from cli.daemon.lifecycle import ensure_daemon, socket_path_for
-from cli.errors import TransportUnavailable, VerbError, DevtoolTimeout
-
+from cli.errors import DevtoolTimeout, TransportUnavailable, VerbError
 
 _ID_COUNTER = itertools.count(1)
 
@@ -33,7 +33,7 @@ class UsbCdcClient:
         *,
         port_override: str | None = None,
         scan_ports: Callable[[str], list[str]] = lambda g: sorted(glob_mod.glob(g)),
-    ) -> "UsbCdcClient":
+    ) -> UsbCdcClient:
         port = port_override
         if port is None:
             glob_pat = manifest.usb.port_glob
@@ -73,7 +73,7 @@ class UsbCdcClient:
                 chunks.append(c)
                 if b"\n" in c:
                     break
-        except socket.timeout as e:
+        except TimeoutError as e:
             raise DevtoolTimeout(
                 f"daemon timeout {self.timeout_s}s on '{method}'",
                 next_step="try `esp32-devtool restart` or physical recovery",

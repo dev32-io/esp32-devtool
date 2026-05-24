@@ -27,14 +27,13 @@ import click
 
 from cli.board import active_boards_dir, detect_board
 from cli.errors import (
-    DevtoolError,
     EXIT_OK,
     EXIT_TRANSPORT_UNAVAILABLE,
     EXIT_VERB_ERROR,
+    DevtoolError,
     report_devtool_error,
 )
 from cli.repo_root import resolve_repo_root
-
 
 # Symbols that ONLY exist when CONFIG_ESP32_DEVTOOL_COMPANION_ENABLE=y is
 # compiled. Catching any of these in prod means the Kconfig gate leaked.

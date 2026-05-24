@@ -1,10 +1,7 @@
 """Tests for --boards-dir flag and ESP32_DEVTOOL_BOARDS_DIR env var."""
 from __future__ import annotations
 
-import os
 from pathlib import Path
-
-import pytest
 
 from cli import board
 

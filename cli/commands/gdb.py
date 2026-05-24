@@ -27,7 +27,6 @@ from cli.errors import DevtoolError, report_devtool_error
 from cli.idf_env import strip_uv_venv_from_path, wrap_with_idf_env
 from cli.repo_root import resolve_repo_root
 
-
 # openocd JTAG listens on 3333 by default; gdb's ``target remote :3333``
 # matches gdb-batch.sh's .gdbinit-batch.
 _GDB_REMOTE = "target remote :3333"
@@ -237,9 +236,9 @@ def run(ctx_obj: dict, batch_script: str | None,
     gdb_bin = _resolve_gdb_bin()
     if gdb_bin is None:
         click.echo(
-            f"[esp32-devtool] xtensa-esp32s3-elf-gdb not found under "
-            f"~/.espressif/tools/xtensa-esp-elf-gdb/*/; install ESP-IDF "
-            f"or set XTENSA_GDB env var",
+            "[esp32-devtool] xtensa-esp32s3-elf-gdb not found under "
+            "~/.espressif/tools/xtensa-esp-elf-gdb/*/; install ESP-IDF "
+            "or set XTENSA_GDB env var",
             err=True,
         )
         return 4
@@ -265,7 +264,7 @@ def run(ctx_obj: dict, batch_script: str | None,
                 err=True,
             )
             return 4
-        click.echo(f"[esp32-devtool] openocd ready, launching gdb", err=True)
+        click.echo("[esp32-devtool] openocd ready, launching gdb", err=True)
         args = _build_gdb_args(gdb_bin, elf, wrapped_script)
         rc = subprocess.call(args)
         return 0 if rc == 0 else 5

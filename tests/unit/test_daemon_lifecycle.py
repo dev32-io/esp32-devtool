@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import socket
 import tempfile
 import threading
@@ -10,12 +9,10 @@ from pathlib import Path
 import pytest
 
 from cli.daemon.lifecycle import (
+    DaemonState,
+    ensure_daemon,
     port_hash,
     socket_path_for,
-    pidfile_path_for,
-    logfile_path_for,
-    ensure_daemon,
-    DaemonState,
 )
 from cli.errors import TransportUnavailable
 

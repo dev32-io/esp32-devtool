@@ -5,7 +5,6 @@ import json as _json
 
 import click as _click
 
-
 EXIT_OK = 0
 EXIT_BAD_USAGE = 2
 EXIT_BOARD_NOT_FOUND = 3

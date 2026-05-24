@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from cli import elf as elf_mod
-from cli.board import BoardManifest, UsbCfg, HttpCfg, LogRelayCfg
+from cli.board import BoardManifest, HttpCfg, LogRelayCfg, UsbCfg
 from cli.errors import DevtoolError
 
 

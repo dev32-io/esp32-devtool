@@ -9,7 +9,6 @@ from cli.board import load_manifest
 from cli.errors import TransportUnavailable
 from cli.transport.http import HttpClient, resolve_base_url
 
-
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
 
 

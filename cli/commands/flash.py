@@ -16,12 +16,11 @@ from pathlib import Path
 import click
 
 from cli.board import BOARDS_DIR, detect_board, resolve_usb_port
-from cli.daemon.lifecycle import ensure_daemon, fetch_events, _runtime_dir
+from cli.daemon.lifecycle import _runtime_dir, ensure_daemon, fetch_events
 from cli.errors import DevtoolError, report_devtool_error
 from cli.idf_env import strip_uv_venv_from_path, wrap_with_idf_env
 from cli.repo_root import resolve_repo_root, substitute
 from cli.transport.usb_cdc import UsbCdcClient
-
 
 # Legacy `_cube_daemon.py` artifacts. The devtool daemon symlinks the legacy
 # /tmp/cube-daemon.sock to its own per-port-hash socket on startup, so legacy

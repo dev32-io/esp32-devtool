@@ -8,8 +8,8 @@ import os
 import socket
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from cli.errors import TransportUnavailable
 
@@ -63,7 +63,7 @@ def _ping(sock_path: Path, timeout_s: float = 1.0) -> bool:
         data = s.recv(1024)
         s.close()
         return b"ok" in data
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return False
 
 
@@ -83,7 +83,7 @@ def fetch_events(sock_path: Path, n: int = 200, timeout_s: float = 2.0) -> list[
             if not chunk:
                 break
             buf += chunk
-    except (OSError, socket.timeout):
+    except (TimeoutError, OSError):
         return []
     finally:
         s.close()

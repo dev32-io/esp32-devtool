@@ -21,10 +21,10 @@ HERE = Path(__file__).resolve().parent
 if str(HERE.parent) not in sys.path:
     sys.path.insert(0, str(HERE.parent))
 
-import click
+import click  # noqa: E402
 
-from cli.board import BOARDS_DIR
-from cli.version import __version__
+from cli.board import BOARDS_DIR  # noqa: E402
+from cli.version import __version__  # noqa: E402
 
 
 @click.group(name="esp32-devtool", invoke_without_command=True)

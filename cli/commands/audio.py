@@ -16,7 +16,6 @@ from cli.errors import DevtoolError, report_devtool_error
 from cli.transport.http import HttpClient, resolve_base_url
 from cli.transport.usb_cdc import UsbCdcClient
 
-
 # /audio/record returns raw PCM, which is slow over WiFi vs JSON verbs. A 10 s
 # capture at 16 kHz mono is 320 KB; allow generous timeout so the underlying
 # AudioService::RecordPcm has time to drain its 1 s codec buffer and stream

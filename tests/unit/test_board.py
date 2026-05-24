@@ -1,16 +1,15 @@
 from __future__ import annotations
 
-import pytest
 from pathlib import Path
 
+import pytest
+
 from cli.board import (
-    BoardManifest,
-    load_manifest,
-    list_manifests,
     detect_board,
+    list_manifests,
+    load_manifest,
 )
 from cli.errors import BoardNotFound
-
 
 FIXTURES = Path(__file__).parent / "fixtures"
 BOARDS_DIR = Path(__file__).resolve().parents[2] / "boards"
