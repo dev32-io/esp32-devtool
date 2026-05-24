@@ -22,7 +22,7 @@ from pathlib import Path
 
 import click
 
-from cli.board import BOARDS_DIR, detect_board
+from cli.board import active_boards_dir, detect_board
 from cli.errors import DevtoolError, report_devtool_error
 from cli.idf_env import strip_uv_venv_from_path, wrap_with_idf_env
 from cli.repo_root import resolve_repo_root
@@ -43,6 +43,10 @@ _OPENOCD_LOG_PATH = Path("/tmp/esp32-devtool-openocd.log")
 # Cleanup grace — openocd handshakes the JTAG release on SIGTERM. 3s is the
 # gdb-batch.sh trap value; we keep it.
 _OPENOCD_TEARDOWN_S = 3.0
+
+# FIXME(v0.2): xtensa-esp32s3-elf is hardcoded for ESP32-S3. RISC-V chips
+# (esp32-c3/c6) need `riscv32-esp-elf-gdb` instead. Map manifest.chip to
+# toolchain prefix when adding multi-chip support. Tracked in docs/ROADMAP.md.
 
 # Glob for the currently-installed xtensa gdb. ESP-IDF versions this dir; we
 # resolve dynamically rather than pinning. ``XTENSA_GDB`` env var overrides.
@@ -189,9 +193,10 @@ def _build_gdb_args(gdb_bin: str, elf: Path,
 def _resolve_firmware_and_elf(ctx_obj: dict) -> tuple[Path, Path] | int:
     """Resolve board → firmware path → ELF. Returns (firmware, elf) on
     success or an exit-code int on failure."""
+    from cli.elf import resolve_elf
     try:
         manifest = detect_board(
-            boards_dir=BOARDS_DIR,
+            boards_dir=active_boards_dir(ctx_obj.get("boards_dir")),
             override_name=ctx_obj.get("board"),
         )
     except DevtoolError as e:
@@ -205,14 +210,11 @@ def _resolve_firmware_and_elf(ctx_obj: dict) -> tuple[Path, Path] | int:
         return 5
     repo_root = resolve_repo_root()
     firmware = repo_root / manifest.firmware_path
-    elf = firmware / "build" / "sentient_cube.elf"
-    if not elf.exists():
-        click.echo(
-            f"[esp32-devtool] ELF not found: {elf}\n"
-            f"   next step: run 'idf.py build' from {firmware} first",
-            err=True,
-        )
-        return 4
+    try:
+        elf = resolve_elf(manifest, firmware)
+    except DevtoolError as e:
+        report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
+        return e.exit_code
     return firmware, elf
 
 

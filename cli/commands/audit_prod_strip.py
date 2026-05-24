@@ -25,8 +25,14 @@ from pathlib import Path
 
 import click
 
-from cli.board import BOARDS_DIR, detect_board
-from cli.errors import EXIT_OK, EXIT_TRANSPORT_UNAVAILABLE, EXIT_VERB_ERROR
+from cli.board import active_boards_dir, detect_board
+from cli.errors import (
+    DevtoolError,
+    EXIT_OK,
+    EXIT_TRANSPORT_UNAVAILABLE,
+    EXIT_VERB_ERROR,
+    report_devtool_error,
+)
 from cli.repo_root import resolve_repo_root
 
 
@@ -61,6 +67,9 @@ LEAK_PATTERNS = (
 # imports (e.g. forward declarations) so only emitted code counts as a leak.
 _UNDEFINED_TOKEN = "*UND*"
 
+# FIXME(v0.2): xtensa-esp32s3-elf is hardcoded for ESP32-S3. RISC-V chips
+# (esp32-c3/c6) need `riscv32-esp-elf-objdump` instead. Map manifest.chip to
+# toolchain prefix when adding multi-chip support. Tracked in docs/ROADMAP.md.
 _OBJDUMP_GLOB = (
     "~/.espressif/tools/xtensa-esp-elf/*/xtensa-esp-elf/bin/"
     "xtensa-esp32s3-elf-objdump"
@@ -113,21 +122,27 @@ def _report_leaks(leaks: list[str]) -> None:
 
 
 def run(ctx_obj: dict) -> int:
-    manifest = detect_board(boards_dir=BOARDS_DIR,
-                            override_name=ctx_obj.get("board"))
+    from cli.elf import resolve_elf
+    try:
+        manifest = detect_board(
+            boards_dir=active_boards_dir(ctx_obj.get("boards_dir")),
+            override_name=ctx_obj.get("board"),
+        )
+    except DevtoolError as e:
+        report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
+        return e.exit_code
     repo = resolve_repo_root()
     if not manifest.firmware_path:
         click.echo(
             f"[esp32-devtool] manifest '{manifest.name}' has no firmware_path",
             err=True)
         return EXIT_VERB_ERROR
-    elf = repo / manifest.firmware_path / "build" / "sentient_cube.elf"
-    if not elf.exists():
-        click.echo(
-            f"[esp32-devtool] ELF not found: {elf} — build first with "
-            f"`idf.py build` (prod profile) before running audit",
-            err=True)
-        return EXIT_TRANSPORT_UNAVAILABLE
+    firmware = repo / manifest.firmware_path
+    try:
+        elf = resolve_elf(manifest, firmware)
+    except DevtoolError as e:
+        report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
+        return e.exit_code
 
     objdump = _resolve_objdump()
     if objdump is None:
