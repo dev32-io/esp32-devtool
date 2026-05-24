@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob as glob_mod
+import os as _os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -15,6 +16,20 @@ from cli.errors import BoardNotFound
 # used to recompute this from its own `__file__`; centralizing keeps the path
 # in one place and shaves a Path() walk per invocation.
 BOARDS_DIR = (Path(__file__).resolve().parent.parent / "boards").resolve()
+
+
+def active_boards_dir(override: Path | None = None) -> Path:
+    """Resolve which boards/ directory to load manifests from.
+
+    Precedence: explicit `override` (e.g. --boards-dir flag) >
+    ESP32_DEVTOOL_BOARDS_DIR env var > bundled `boards/` next to this file.
+    """
+    if override is not None:
+        return Path(override).resolve()
+    env = _os.environ.get("ESP32_DEVTOOL_BOARDS_DIR")
+    if env:
+        return Path(env).resolve()
+    return BOARDS_DIR
 
 
 @dataclass

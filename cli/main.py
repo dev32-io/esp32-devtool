@@ -34,6 +34,8 @@ from cli.version import __version__
 @click.option("--profile", default=None, type=click.Choice(["debug", "prod"]),
               help="Build profile (debug|prod). Defaults vary per command.")
 @click.option("--repo-root", default=None, help="Override git-root inference.")
+@click.option("--boards-dir", "boards_dir", default=None,
+              help="Override the bundled boards/ directory.")
 @click.option("--quiet/--no-quiet", default=False)
 @click.option("--verbose/--no-verbose", default=False)
 @click.option("--json", "json_out", is_flag=True, help="Machine-readable output.")
