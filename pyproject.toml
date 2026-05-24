@@ -2,7 +2,7 @@
 name = "esp32-devtool"
 version = "0.1.0"
 description = "ADB-style CLI for ESP32/ESP-IDF boards. Agent-native."
-authors = [{name = "Kevin Ye"}]
+authors = [{name = "Kevin Ye", email = "kevin.ye32@gmail.com"}]
 license = "MIT"
 license-files = ["LICENSE", "NOTICE"]
 readme = "README.md"
