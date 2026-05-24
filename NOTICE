@@ -1,0 +1,21 @@
+esp32-devtool
+Copyright 2026 Kevin Ye
+
+This product includes software developed by third parties:
+
+- requests (Apache-2.0)
+    Copyright 2019 Kenneth Reitz
+    https://github.com/psf/requests
+
+- pytest-asyncio (Apache-2.0)
+    Copyright 2015 Tin Tvrtkovic
+    https://github.com/pytest-dev/pytest-asyncio
+
+The firmware companion component bundles or links the following
+ESP-IDF components, each retaining its own license:
+
+- esp_http_server, esp_netif (Apache-2.0, Espressif Systems)
+- lvgl (MIT, LVGL contributors)
+- cJSON (MIT, Dave Gamble and contributors)
+
+Full upstream license texts are available in each dependency's distribution.
