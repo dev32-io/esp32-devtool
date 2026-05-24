@@ -9,10 +9,13 @@ over USB and AI coding agents driving the same board over JSON.
 
 ## Why
 
-ESP32 dev loops accumulate scripts: `flash.sh`, `find-port.sh`,
-`monitor.sh`, `gdb-batch.sh`, helper Pythons, env shims, daemon hacks.
-Once an LLM agent enters the loop, those scripts' inconsistent argument
-shapes and screen-scraped output become the bottleneck.
+ESP32 dev loops commonly use `espressif` official `idf.py` Python helpers.
+Once an LLM agent enters the loop, the main issues are 
+1. agent is unable to get instant visual feedback (screenshot)
+2. agent is unable to send arbitrary touch-event, *large* binary payload over the USB protocol
+3. agent needs to understand and figure aginast different parameter structure used by the scripts
+   
+These constantly block the agent from working autonomously, requiring human in the loop to manually interact with the hardware (touch, eye ball check), which is unproductive. 
 
 `esp32-devtool` collapses them into one tool with:
 
