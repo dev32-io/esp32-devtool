@@ -41,7 +41,7 @@ jobs:
         run: |
           uv run pip-licenses \
             --from=mixed \
-            --allow-only="MIT;BSD;BSD-3-Clause;BSD-2-Clause;Apache-2.0;Apache 2.0;ISC;Python-2.0;MPL-2.0;PSF-2.0;Apache Software License;BSD License;MIT License;ISC License (ISCL);Python Software Foundation License"
+            --allow-only="MIT;BSD;BSD-3-Clause;BSD-2-Clause;Apache-2.0;Apache 2.0;ISC;Python-2.0;MPL-2.0;PSF-2.0;Apache Software License;BSD License;MIT License;ISC License (ISCL);Python Software Foundation License;Apache-2.0 OR BSD-2-Clause;Mozilla Public License 2.0 (MPL 2.0)"
 
   build-wheel:
     runs-on: ubuntu-latest
