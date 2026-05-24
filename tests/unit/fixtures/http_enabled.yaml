@@ -1,0 +1,20 @@
+name: http-enabled-board
+display_name: "HTTP-Enabled Test Fixture"
+chip: esp32-s3
+firmware_path: ./firmware
+build_profiles: [debug]
+
+usb:
+  port_glob: "/dev/cu.usbmodem*"
+
+http:
+  enabled: true
+  port: 8081
+  discover_via: usb-info
+
+capabilities:
+  flash:        { transport: usb-cdc, require: [usb] }
+  screenshot:   { transport: http, require: [http] }
+
+verbs:
+  - state

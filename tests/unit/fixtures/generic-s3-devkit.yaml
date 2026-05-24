@@ -1,0 +1,21 @@
+name: generic-s3-devkit
+display_name: "Generic ESP32-S3 DevKit (test fixture)"
+chip: esp32-s3
+firmware_path: ./firmware
+build_profiles: [debug]
+
+usb:
+  port_glob: "/dev/cu.usbmodem*"
+
+http:
+  enabled: false
+
+capabilities:
+  flash:        { transport: usb-cdc, require: [usb] }
+  logs:         { transport: usb-cdc, sources: [usb] }
+  cmd:          { transport: usb-cdc, require: [daemon] }
+
+verbs:
+  - state
+  - restart
+  - log_level
