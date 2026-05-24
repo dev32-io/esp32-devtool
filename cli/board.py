@@ -85,6 +85,7 @@ class BoardManifest:
     verbs: list[str]
     extensions: list[Extension]
     source_path: Path
+    build_artifact: str | None = None
 
 
 def load_manifest(path: Path) -> BoardManifest:
@@ -146,6 +147,7 @@ def load_manifest(path: Path) -> BoardManifest:
         verbs=list(raw.get("verbs") or []),
         extensions=exts,
         source_path=path,
+        build_artifact=raw.get("build_artifact"),
     )
 
 
