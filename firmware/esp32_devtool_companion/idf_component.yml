@@ -1,3 +1,17 @@
+description: "Host-side devtool firmware companion: HTTP screenshot/touch/audio + USB-CDC JSON-RPC verb dispatcher."
+url: "https://github.com/dev32-io/esp32-devtool"
+version: "0.1.0"
+license: "MIT"
+
 dependencies:
-  idf: ">=5.0"
-  lvgl/lvgl: "^9.2"
+  idf:
+    version: ">=5.1"
+  espressif/cjson:
+    version: "*"
+  lvgl/lvgl:
+    version: "^9.2"
+
+files:
+  exclude:
+    - "test/**"
+    - "*.md"
