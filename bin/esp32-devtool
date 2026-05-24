@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# esp32-devtool — uv-run shim for editable-checkout usage.
+#
+# Two install paths supported:
+#   1. Editable checkout (this shim): runs cli/main.py via `uv run --script`
+#      using the PEP-723 dependency header embedded in main.py.
+#   2. pipx install: pyproject.toml's [project.scripts] entry generates a
+#      standalone esp32-devtool binary on $PATH. This shim is not invoked.
+#
+# Path resolution: HERE = directory of this script. PROJECT_ROOT = parent of
+# HERE. Works for any clone location and survives symlinks.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")" && pwd)"
+PROJECT_ROOT="$(cd "$HERE/.." && pwd)"
+
+if [[ ! -f "$PROJECT_ROOT/cli/main.py" ]]; then
+    echo "esp32-devtool: cli/main.py not found at $PROJECT_ROOT/cli/main.py" >&2
+    echo "  this shim expects to live at <repo>/bin/esp32-devtool" >&2
+    exit 1
+fi
+
+exec uv run --script "$PROJECT_ROOT/cli/main.py" "$@"
