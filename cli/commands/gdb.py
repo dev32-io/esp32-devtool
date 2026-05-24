@@ -1,14 +1,14 @@
 """esp32-devtool gdb — openocd + xtensa-gdb pair, optional batch script.
 
-Absorbs ``esp32/cube/scripts/gdb-batch.sh``: spawn ``idf.py openocd`` in the
-firmware dir (it owns the ESP-IDF env), wait for it to come up, then invoke
-``xtensa-esp32s3-elf-gdb`` against the cube's ELF. Clean teardown via
-process-group SIGTERM + pkill so the openocd grandchild doesn't dangle.
+Spawns ``idf.py openocd`` in the firmware dir (it owns the ESP-IDF env),
+waits for it to come up, then invokes ``xtensa-esp32s3-elf-gdb`` against
+the board's ELF. Clean teardown via process-group SIGTERM + pkill so the
+openocd grandchild doesn't dangle.
 
-Built-in ESP32-S3 USB-Serial-JTAG: openocd halts the cube while attached.
+Built-in ESP32-S3 USB-Serial-JTAG: openocd halts the board while attached.
 gdb's default ``quit`` does NOT resume a halted remote target — we wrap the
 user batch script with a ``monitor resume`` + ``detach`` postamble so the
-cube returns to running state cleanly.
+board returns to running state cleanly.
 """
 from __future__ import annotations
 

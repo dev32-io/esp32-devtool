@@ -157,14 +157,6 @@ def restart(ctx: click.Context) -> None:
     sys.exit(run(ctx.obj))
 
 
-@cli.command()
-@click.option("--hil", is_flag=True)
-@click.option("--lvgl-sim", "lvgl_sim", is_flag=True)
-def setup(hil: bool, lvgl_sim: bool) -> None:
-    from cli.commands.setup import run
-    sys.exit(run(hil, lvgl_sim))
-
-
 @cli.group()
 def daemon() -> None:
     pass
@@ -221,22 +213,39 @@ def audit_prod_strip(ctx: click.Context) -> None:
 
 
 def _try_register_extensions() -> None:
-    """Best-effort: load the cube manifest and register its extensions as
-    top-level commands. Failures (missing manifest, parse error, missing
-    cli.board module) are silently swallowed — the rest of the CLI still
-    works without manifest extensions.
+    """Best-effort: load every manifest in the boards-dir and register any
+    declared extensions as top-level commands. Silently swallows failures so
+    a malformed manifest never breaks the core CLI.
 
-    Force-loads the ``cube`` manifest by name rather than auto-detecting via
-    USB scan, so extensions are present in ``--help`` even when no board is
-    connected at CLI startup.
+    Iterating all manifests (not hardcoding one) means a user with multiple
+    boards in their boards-dir gets all extensions registered up-front; the
+    rare collision is acceptable (last-wins; documented in CLAUDE.md).
     """
     try:
-        from cli.board import detect_board
+        from cli.board import list_manifests
         from cli.commands.extensions import register_dynamic
-        manifest = detect_board(boards_dir=BOARDS_DIR, override_name="cube")
+        manifests = list_manifests(_active_boards_dir())
     except Exception:
         return
-    register_dynamic(cli, manifest)
+    for m in manifests:
+        try:
+            register_dynamic(cli, m)
+        except Exception:
+            continue
+
+
+def _active_boards_dir():
+    """Boards dir lookup used at module-import time, before Click parses
+    --boards-dir. Reads ESP32_DEVTOOL_BOARDS_DIR env var if set; otherwise
+    the bundled boards/ dir next to this file. The --boards-dir flag value
+    only affects per-command dispatch (commands re-resolve via context),
+    so extension registration always uses env-or-default."""
+    import os
+    from pathlib import Path
+    env = os.environ.get("ESP32_DEVTOOL_BOARDS_DIR")
+    if env:
+        return Path(env)
+    return BOARDS_DIR
 
 
 _try_register_extensions()

@@ -1,9 +1,9 @@
 """esp32-devtool flash — build + flash via idf.py + eager daemon respawn.
 
-Absorbs ``esp32/cube/scripts/flash.sh``: kill legacy + devtool daemons (port
-contention shows up as "No serial data received", not an AXP2101 fault),
-run bake-creds, idf.py flash, eager-spawn the devtool daemon (T31), wait
-for ``>>> READY`` in the ring, then poll ``state`` until past pre-WiFi.
+Build + flash firmware. Kills any active devtool daemon on the target
+port before invoking idf.py flash (the daemon holds the serial), then
+respawns the daemon post-flash so subsequent `cmd`/`logs` calls work.
+Waits for ``>>> READY`` in the ring, then polls ``state`` until past pre-WiFi.
 """
 from __future__ import annotations
 

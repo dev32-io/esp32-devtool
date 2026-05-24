@@ -1,4 +1,4 @@
-"""Port-holding daemon for esp32-devtool. Generalized from esp32/cube/scripts/_cube_daemon.py.
+"""Port-holding daemon for esp32-devtool. Generalized from the legacy per-board daemon.
 
 Opens the USB-CDC port ONCE and holds it across many client connections.
 Each client connects via Unix socket; the daemon writes CMDs to serial,
@@ -206,7 +206,7 @@ class CubeDaemon:
                 # Wire format from UsbCdcClient: {"kind": "cmd", "json": <json-rpc-str>}
                 # The "json" field contains the full JSON-RPC 2.0 object. Decode it
                 # and forward verbatim to the serial line as ">>> CMD <json>".
-                # Legacy callers (esp32/cube/scripts/_cube_cmd_helper.py) send a
+                # Legacy callers (legacy cmd-helper scripts) send a
                 # FLAT envelope: {"kind":"cmd", "id":N, "method":..., "params":...}
                 # and expect the bare JSON-RPC reply back (no kind:rsp wrapper).
                 # We detect by the presence/absence of "json" and respond in the
@@ -257,7 +257,7 @@ _LEGACY_CUBE_PID = Path("/tmp/cube-daemon.pid")
 def _alias_legacy_socket(sock_path: Path) -> None:
     """Expose the devtool daemon at /tmp/cube-daemon.sock as well.
 
-    Legacy callers (``esp32/cube/scripts/cube-cmd.sh`` →
+    Legacy callers (``legacy cube-cmd shell scripts`` →
     ``_cube_cmd_helper.py``) hardcode that path. The wire protocol on
     server.py already accepts both the legacy flat ``{kind:cmd,
     method, params}`` shape and the new ``{kind:cmd, json: <jsonrpc>}``

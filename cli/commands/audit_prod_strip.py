@@ -1,6 +1,6 @@
 """esp32-devtool audit-prod-strip — verify no devtool symbols leak into prod ELF.
 
-Runs ``xtensa-esp32s3-elf-objdump -t`` over the cube's built ELF, greps for
+Runs ``xtensa-esp32s3-elf-objdump -t`` over the board's built ELF, greps for
 the devtool API surface, and fails if any defined symbol matches. The intent
 is to prove the ``CONFIG_ESP32_DEVTOOL_COMPANION_ENABLE=n`` gate fully
 strips the companion path — every devtool symbol present in prod is, by

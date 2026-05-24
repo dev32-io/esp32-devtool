@@ -7,11 +7,10 @@ top-level click command on the CLI; invoking it execs the manifest's
 ``exec`` path with all extra args passed through verbatim.
 
 Registration is "best-effort": ``main.py`` calls :func:`register_dynamic`
-at startup with the cube manifest force-loaded via ``override_name="cube"``,
-so the extension list is available even when no board is on USB at the
-moment of CLI invocation. If manifest loading fails for any reason
-(missing file, parse error, schema mismatch), registration is silently
-skipped — the rest of the CLI still works.
+at startup for every manifest in the boards-dir, so extensions are available
+even when no board is on USB at the moment of CLI invocation. If manifest
+loading fails for any reason (missing file, parse error, schema mismatch),
+registration is silently skipped — the rest of the CLI still works.
 """
 from __future__ import annotations
 
