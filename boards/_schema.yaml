@@ -1,0 +1,43 @@
+# esp32-devtool board manifest schema. Documentation only — loader does its own validation.
+# Each entry below shows the expected type + sample value.
+name: my-board                            # required str
+display_name: "My Board"                  # required str
+chip: esp32-s3                            # required enum: esp32-s3 | esp32-s2 | esp32-p4 | esp32-c3 | esp32-c6
+firmware_path: <your-firmware-dir>        # optional str; required for `flash`
+build_artifact: ~                         # optional str; ELF filename in <firmware_path>/build/; auto if exactly one .elf
+build_profiles: [debug, prod]             # required list[str]
+
+usb:
+  vid: 0x303A                             # optional int
+  pid: 0x1001                             # optional int
+  port_glob: "/dev/cu.usbmodem*"          # optional str; required if vid/pid absent
+
+http:
+  enabled: true                           # required bool
+  port: 8081                              # required int
+  discover_via: usb-info                  # enum: usb-info | mdns | static
+  static_host: 192.168.0.121              # required if discover_via=static
+
+capabilities:                             # required map[verb -> {transport, require?, format?}]
+  flash:        { transport: usb-cdc, require: [usb] }
+  logs:         { transport: auto, sources: [usb, udp] }
+  cmd:          { transport: usb-cdc, require: [daemon] }
+  screenshot:   { transport: http, require: [http], format: [png, jpeg, rgb565] }
+  touch:        { transport: http, require: [http] }
+  audio_record: { transport: http, require: [http] }
+  audio_inject: { transport: http, require: [http] }
+  audio_play:   { transport: usb-cdc }
+
+log_relay:                                # optional
+  enabled: true
+  port: 9000
+  format: json                            # text | json
+
+verbs: []                                 # list[str] — USB-CDC JSON-RPC method names
+
+extensions:                               # optional list[manifest extension]; see examples/cube/ for examples
+  - cmd: my-extension                     # extension command name
+    exec: /path/to/script.sh               # path to executable
+    args_passthrough: true                 # optional bool
+    transient: true                        # optional bool
+    help: "Extension help text"            # optional str

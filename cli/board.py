@@ -165,7 +165,7 @@ def _default_scan_ports(glob_pat: str) -> list[str]:
 
 
 def resolve_usb_port(manifest: BoardManifest, override: str | None = None) -> str | None:
-    """Resolve the cube USB port: override → manifest glob → None.
+    """Resolve the board USB port: override → manifest glob → None.
 
     Returns the first matching device path, or None if no port detected.
     Callers raise typed ``DevtoolError`` if None matters at their layer.
