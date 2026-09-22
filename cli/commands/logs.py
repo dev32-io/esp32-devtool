@@ -28,8 +28,9 @@ from pathlib import Path
 
 import click
 
-from cli.board import BOARDS_DIR, detect_board, resolve_usb_port
+from cli.board import active_boards_dir, detect_board, resolve_usb_port
 from cli.daemon.lifecycle import ensure_daemon, fetch_events, socket_path_for
+from cli.errors import BadUsage, BoardNotFound, DevtoolError, report_devtool_error
 
 # Map -level letters to numeric severity. The cube emits ESP_LOGx lines with
 # a leading single char ("D (123) tag: msg") so we filter at the host edge.
@@ -77,7 +78,7 @@ class Dedupe:
         return False
 
 
-def _format_line(source: str, line: str, *, no_color: bool, json_out: bool) -> str:
+def _format_line(source: str, line: str, *, json_out: bool) -> str:
     ts = time.strftime("%H:%M:%S")
     if json_out:
         return json.dumps({"ts": ts, "source": source, "msg": line})
@@ -156,13 +157,13 @@ async def _udp_stream(udp_port: int, filter_pat: re.Pattern | None,
         sock.close()
 
 
-async def _merge(queue: asyncio.Queue, *, no_color: bool, json_out: bool,
+async def _merge(queue: asyncio.Queue, *, json_out: bool,
                  stop_after_idle_s: float | None) -> None:
     """Drain the queue, dedupe across sources, print one line per event.
 
     When ``stop_after_idle_s`` is set, the merger exits after that many
-    seconds of no events arriving. Used to terminate the no-follow path
-    after the initial USB drain (UDP source may still be coro-pending).
+    seconds of no events arriving. One-shot mode drains the USB queue
+    after its bounded fetch completes.
     """
     dedupe = Dedupe()
     while True:
@@ -179,67 +180,60 @@ async def _merge(queue: asyncio.Queue, *, no_color: bool, json_out: bool,
         if dedupe.saw(bucket, line):
             continue
         click.echo(_format_line(
-            source, line, no_color=no_color, json_out=json_out
+            source, line, json_out=json_out
         ))
 
 
-def run(ctx_obj: dict, follow: bool, since: str | None,
+def run(ctx_obj: dict, follow: bool,
         filter_pat: str | None, source: str, level: str,
-        no_color: bool, lines: int, json_out: bool) -> int:
-    manifest = detect_board(
-        boards_dir=BOARDS_DIR,
-        override_name=ctx_obj.get("board"),
-    )
-    port = resolve_usb_port(manifest, ctx_obj.get("port"))
-    pat = re.compile(filter_pat) if filter_pat else None
-
-    # `since` is accepted for future filtering on timestamped lines but is
-    # not yet implemented. Lines are already strictly ordered within each
-    # source, and the daemon ring is bounded — so for now we ignore it.
-    _ = since
+        lines: int, json_out: bool) -> int:
+    try:
+        if source == "udp" and not follow:
+            raise BadUsage("UDP logs require --follow (no replay buffer)")
+        manifest = detect_board(
+            boards_dir=active_boards_dir(ctx_obj.get("boards_dir")),
+            override_name=ctx_obj.get("board"),
+            override_port=ctx_obj.get("port"),
+        )
+        port = (resolve_usb_port(manifest, ctx_obj.get("port"))
+                if source in ("usb", "all") else None)
+        if source in ("usb", "all") and port is None:
+            raise BoardNotFound(f"no USB port matched {manifest.usb.port_glob!r}")
+        try:
+            pat = re.compile(filter_pat) if filter_pat else None
+        except re.error as e:
+            raise BadUsage(f"invalid log filter: {e}") from e
+        if port is not None:
+            ensure_daemon(port)
+    except DevtoolError as e:
+        report_devtool_error(e, json_out=json_out)
+        return e.exit_code
 
     queue: asyncio.Queue = asyncio.Queue()
 
     async def main() -> None:
         producers: list[asyncio.Task] = []
         if source in ("usb", "all"):
-            if port is None:
-                raise click.ClickException(
-                    f"no USB port matched {manifest.usb.port_glob!r}"
-                )
-            ensure_daemon(port)
             sock_path = socket_path_for(port)
             producers.append(asyncio.create_task(_ring_poll_stream(
                 sock_path, lines, pat, level, follow, queue
             )))
-        if source in ("udp", "all") and manifest.log_relay.enabled:
+        if follow and source in ("udp", "all") and manifest.log_relay.enabled:
             producers.append(asyncio.create_task(_udp_stream(
                 manifest.log_relay.port, pat, level, queue
             )))
         if not producers:
             return
 
-        # Non-follow path: producers self-exit after one drain. We wait on
-        # them, then drain the queue with a short idle timeout to flush any
-        # late UDP arrivals.
-        idle_timeout = None if follow else 0.5
-        merger = asyncio.create_task(_merge(
-            queue, no_color=no_color, json_out=json_out,
-            stop_after_idle_s=idle_timeout,
-        ))
-
         if follow:
-            try:
-                await asyncio.gather(*producers, merger)
-            except asyncio.CancelledError:
-                pass
-            return
-
-        await asyncio.gather(*producers)
-        try:
-            await asyncio.wait_for(merger, timeout=2.0)
-        except TimeoutError:
-            merger.cancel()
+            merger = asyncio.create_task(_merge(
+                queue, json_out=json_out, stop_after_idle_s=None,
+            ))
+            await asyncio.gather(*producers, merger)
+        else:
+            await asyncio.gather(*producers)
+            await _merge(queue, json_out=json_out,
+                         stop_after_idle_s=0.01)
 
     try:
         asyncio.run(main())

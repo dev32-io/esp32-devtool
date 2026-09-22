@@ -1,13 +1,9 @@
-"""esp32-devtool flash — build + flash via idf.py + eager daemon respawn.
-
-Build + flash firmware. Kills any active devtool daemon on the target
-port before invoking idf.py flash (the daemon holds the serial), then
-respawns the daemon post-flash so subsequent `cmd`/`logs` calls work.
-Waits for ``>>> READY`` in the ring, then polls ``state`` until past pre-WiFi.
-"""
+"""Build and flash via idf.py; debug additionally verifies companion readiness."""
 from __future__ import annotations
 
+import json
 import os
+import shlex
 import signal
 import subprocess
 import time
@@ -15,21 +11,15 @@ from pathlib import Path
 
 import click
 
-from cli.board import BOARDS_DIR, detect_board, resolve_usb_port
-from cli.daemon.lifecycle import _runtime_dir, ensure_daemon, fetch_events
-from cli.errors import DevtoolError, report_devtool_error
-from cli.idf_env import strip_uv_venv_from_path, wrap_with_idf_env
-from cli.repo_root import resolve_repo_root, substitute
+from cli.board import active_boards_dir, detect_board, resolve_usb_port
+from cli.daemon.lifecycle import ensure_daemon, fetch_events, socket_path_for, stop_daemon
+from cli.errors import BoardNotFound, DevtoolError, DevtoolTimeout, VerbError, report_devtool_error
+from cli.idf_env import strip_uv_venv_from_path
+from cli.repo_root import resolve_repo_root
 from cli.transport.usb_cdc import UsbCdcClient
 
-# Legacy `_cube_daemon.py` artifacts. The devtool daemon symlinks the legacy
-# /tmp/cube-daemon.sock to its own per-port-hash socket on startup, so legacy
-# callers keep working through the same converged daemon.
-_LEGACY_SOCK = Path("/tmp/cube-daemon.sock")
-_LEGACY_PID = Path("/tmp/cube-daemon.pid")
-
-# Firmware emits >>> READY at end of boot; we gate flash's return on it so
-# callers see "flash + boot complete", not just esptool's RTS reset.
+# Debug companion emits this after its serial reader starts; it is not
+# evidence that the application has finished connecting to its gateway.
 _READY_MARKER = ">>> READY"
 
 # Cube cold boot from ROM → WiFi → IDLE typically completes in 8-15 s;
@@ -42,67 +32,8 @@ _RING_POLL_INTERVAL_S = 0.5
 _RING_LINES_PER_POLL = 500
 
 
-def _signal_pidfile(pid_path: Path) -> None:
-    try:
-        os.kill(int(pid_path.read_text().strip()), signal.SIGTERM)
-    except (ValueError, ProcessLookupError, PermissionError, OSError):
-        pass
-
-
-def _unlink_quiet(path: Path) -> None:
-    try:
-        if path.is_symlink() or path.exists():
-            path.unlink()
-    except OSError:
-        pass
-
-
-def _kill_all_daemons() -> None:
-    """Tear down both legacy (_cube_daemon.py) and devtool daemons before
-    flash so esptool has the serial port. Pidfile unlink prevents
-    ensure_daemon's "already running" guard from refusing the respawn.
-    Legacy first so its symlink unlink doesn't confuse the spawn coming up."""
-    if _LEGACY_PID.exists():
-        _signal_pidfile(_LEGACY_PID)
-    try:
-        subprocess.run(["pkill", "-f", "_cube_daemon"], check=False,
-                       capture_output=True, timeout=5.0)
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    _unlink_quiet(_LEGACY_SOCK)
-    _unlink_quiet(_LEGACY_PID)
-    runtime = _runtime_dir()
-    if runtime.exists():
-        for pid_path in runtime.glob("*.pid"):
-            _signal_pidfile(pid_path)
-            _unlink_quiet(pid_path)
-        for sock_path in runtime.glob("*.sock"):
-            _unlink_quiet(sock_path)
-    # pyserial close() needs ~hundreds of ms to release the CDC fd.
-    time.sleep(1.0)
-
-
-def _run_bake_creds(manifest, repo_root: Path) -> int:
-    """Invoke the manifest's ``bake-creds`` extension verbatim. No
-    ``--profile`` synthesis per task spec; bake-creds defaults to debug
-    which matches the only profile tested. Prod parity → Task 22."""
-    for ext in manifest.extensions:
-        if ext.cmd != "bake-creds":
-            continue
-        exec_path = substitute(ext.exec, repo_root=repo_root)
-        if ext.transient:
-            click.echo(
-                f"[esp32-devtool] running transient extension: bake-creds "
-                f"({exec_path})", err=True)
-        return subprocess.run([exec_path], check=False).returncode
-    return 0
-
-
-def _run_idf_flash(firmware_path: Path, port: str, profile: str) -> int:
-    """Invoke ``idf.py -p <port> flash`` with flash.sh's SDKCONFIG chain.
-    Re-sources export.sh inside IDF_PATH (flash.sh lines 52-60) when idf.py
-    is absent. Plan's ``sdkconfig.defaults.esp32s3`` chain entry is a no-op
-    file in this repo, dropped to match flash.sh exactly."""
+def _run_idf_flash(firmware_path: Path, port: str, profile: str, timeout_s: float = 600.0) -> int:
+    """Build with isolated profile config in the shared build/ ELF directory."""
     env = os.environ.copy()
     sdkconfig_chain = f"sdkconfig.defaults;sdkconfig.defaults.{profile}"
     env["SDKCONFIG_DEFAULTS"] = sdkconfig_chain
@@ -111,27 +42,64 @@ def _run_idf_flash(firmware_path: Path, port: str, profile: str) -> int:
         f"[esp32-devtool] profile={profile} SDKCONFIG_DEFAULTS={sdkconfig_chain}",
         err=True,
     )
-    flash_cmd = wrap_with_idf_env(
-        firmware_path,
-        f'idf.py -p "{port}" flash',
-        idf_path=env.get("IDF_PATH"),
+    sdkconfig = firmware_path.resolve() / "build" / f"sdkconfig.{profile}"
+    idf_path = env.get("IDF_PATH") or str(Path.home() / "esp/esp-idf")
+    flash_cmd = (
+        "if ! command -v idf.py >/dev/null 2>&1; then "
+        f"cd {shlex.quote(idf_path)} && . ./export.sh >/dev/null 2>&1 || true; "
+        "fi; "
+        f"cd {shlex.quote(str(firmware_path))} && "
+        f"idf.py -D {shlex.quote('SDKCONFIG=' + str(sdkconfig))} "
+        f"-p {shlex.quote(port)} reconfigure build flash"
     )
-    return subprocess.run(["bash", "-c", flash_cmd], env=env, check=False).returncode
+    try:
+        proc = subprocess.Popen(
+            ["bash", "-c", flash_cmd], env=env, stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError:
+        raise VerbError("idf.py build/flash could not start; check IDF installation") from None
+    try:
+        return proc.wait(timeout=timeout_s)
+    except BaseException as exc:
+        # Bash may spawn idf.py and esptool; kill the session, not only Bash.
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+        # Bash can exit while an IDF descendant ignores TERM; kill remaining group.
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass  # Bounded even if an uninterruptible process cannot be reaped.
+        if isinstance(exc, subprocess.TimeoutExpired):
+            raise DevtoolTimeout(
+                f"idf.py build/flash exceeded {timeout_s:g}s",
+                next_step="check IDF installation and build configuration before retrying",
+            ) from None
+        raise
 
 
-def _wait_for_ready(timeout_s: float = _READY_TIMEOUT_S) -> bool:
-    """Poll the daemon ring for >>> READY via the legacy symlink."""
+def _wait_for_ready(port: str, timeout_s: float = _READY_TIMEOUT_S) -> bool:
+    """Poll selected daemon ring for >>> READY."""
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        events = fetch_events(_LEGACY_SOCK, _RING_LINES_PER_POLL)
+        events = fetch_events(socket_path_for(port), _RING_LINES_PER_POLL)
         if any(_READY_MARKER in line for line in events):
             return True
         time.sleep(_RING_POLL_INTERVAL_S)
     return False
 
 
-# READY fires before WiFi connect (5-10 s later). Flash callers expect a
-# settled state by the time flash returns, so we also wait past pre-WiFi.
+# Companion READY alone does not guarantee a settled application state.
 _PRE_WIFI_STATES = frozenset({"UNKNOWN", "STARTING", "WIFI_CONFIGURING"})
 _STATE_SETTLE_TIMEOUT_S = 20.0
 
@@ -151,86 +119,82 @@ def _wait_for_settled_state(port: str) -> bool:
     return False
 
 
-def _resolve_firmware_path(manifest, repo_root: Path) -> Path | None:
+def _resolve_firmware_path(manifest, repo_root: Path) -> Path:
     if not manifest.firmware_path:
-        click.echo(
-            f"[esp32-devtool] manifest '{manifest.name}' has no firmware_path",
-            err=True)
-        return None
+        raise VerbError(f"manifest '{manifest.name}' has no firmware_path")
     firmware_path = repo_root / manifest.firmware_path
     if not firmware_path.exists():
-        click.echo(
-            f"[esp32-devtool] firmware_path '{firmware_path}' does not exist",
-            err=True)
-        return None
+        raise VerbError(f"firmware_path '{firmware_path}' does not exist")
     return firmware_path
 
 
-def _respawn_daemon_and_wait_ready(port: str) -> int:
-    """Eager-spawn the devtool daemon + wait for >>> READY + wait for the
-    cube to settle past pre-WiFi states. Returns 0 or the exit code."""
-    try:
-        ensure_daemon(port, spawn_timeout_s=_DAEMON_SPAWN_TIMEOUT_S)
-    except DevtoolError as e:
-        click.echo(f"[esp32-devtool] daemon respawn failed: {e}", err=True)
-        if e.next_step:
-            click.echo(f"   next step: {e.next_step}", err=True)
-        return e.exit_code
-    if not _wait_for_ready():
-        click.echo(
-            f"[esp32-devtool] cube did not emit '{_READY_MARKER}' within "
-            f"{_READY_TIMEOUT_S}s; inspect ring via 'esp32-devtool daemon "
-            f"ring --port {port}'",
-            err=True,
+def _respawn_daemon_and_wait_ready(port: str) -> None:
+    ensure_daemon(port, spawn_timeout_s=_DAEMON_SPAWN_TIMEOUT_S)
+    if not _wait_for_ready(port):
+        raise DevtoolTimeout(
+            f"cube did not emit '{_READY_MARKER}' within {_READY_TIMEOUT_S}s",
+            next_step=f"inspect ring via 'esp32-devtool daemon ring --port {port}'",
         )
-        return 6
     if not _wait_for_settled_state(port):
-        click.echo(
-            f"[esp32-devtool] cube stayed in pre-WiFi state for "
-            f"{_STATE_SETTLE_TIMEOUT_S}s after READY; inspect WiFi creds",
-            err=True,
+        raise DevtoolTimeout(
+            f"cube stayed in pre-WiFi state for {_STATE_SETTLE_TIMEOUT_S}s after READY",
+            next_step="inspect WiFi creds",
         )
-        return 6
-    return 0
 
 
 def run(ctx_obj: dict, profile: str) -> int:
     try:
         manifest = detect_board(
-            boards_dir=BOARDS_DIR,
+            boards_dir=active_boards_dir(ctx_obj.get("boards_dir")),
             override_name=ctx_obj.get("board"),
+            override_port=ctx_obj.get("port"),
         )
     except DevtoolError as e:
         report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
         return e.exit_code
 
-    repo_root = resolve_repo_root()
-    firmware_path = _resolve_firmware_path(manifest, repo_root)
-    if firmware_path is None:
-        return 5
+    repo_root = Path(ctx_obj["repo_root"]) if ctx_obj.get("repo_root") else resolve_repo_root()
+    try:
+        firmware_path = _resolve_firmware_path(manifest, repo_root)
+    except DevtoolError as e:
+        report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
+        return e.exit_code
 
-    port = resolve_usb_port(manifest, ctx_obj.get("port"))
-    if port is None:
-        click.echo("[esp32-devtool] no USB port detected", err=True)
-        return 3
+    try:
+        port = resolve_usb_port(manifest, ctx_obj.get("port"))
+        if port is None:
+            raise BoardNotFound("no USB port detected")
+    except DevtoolError as e:
+        report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
+        return e.exit_code
     click.echo(f"[esp32-devtool] port={port}", err=True)
 
-    rc = _run_bake_creds(manifest, repo_root)
-    if rc != 0:
-        click.echo(f"[esp32-devtool] bake-creds failed rc={rc}", err=True)
-        return 5
+    click.echo("[esp32-devtool] stopping target daemon before flash", err=True)
+    try:
+        stop_daemon(port)
+    except DevtoolError as e:
+        report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
+        return e.exit_code
 
-    click.echo("[esp32-devtool] killing existing daemons before flash", err=True)
-    _kill_all_daemons()
+    try:
+        rc = _run_idf_flash(firmware_path, port, profile, manifest.flash_timeout_s)
+        if rc != 0:
+            raise VerbError(
+                f"idf.py build/flash failed rc={rc}",
+                next_step="check IDF installation and build configuration before retrying",
+            )
+        if profile == "debug":
+            _respawn_daemon_and_wait_ready(port)
+    except DevtoolError as e:
+        report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
+        return e.exit_code
 
-    rc = _run_idf_flash(firmware_path, port, profile)
-    if rc != 0:
-        click.echo(f"[esp32-devtool] idf.py flash failed rc={rc}", err=True)
-        return 5
-
-    rc = _respawn_daemon_and_wait_ready(port)
-    if rc != 0:
-        return rc
-
-    click.echo(f"flash OK — port={port} profile={profile}")
+    if ctx_obj.get("json_out"):
+        result = {"port": port, "profile": profile, "ok": True}
+        if profile == "prod":
+            result["verification"] = "flash-only"
+        click.echo(json.dumps(result))
+    else:
+        suffix = " verification=flash-only" if profile == "prod" else ""
+        click.echo(f"flash OK — port={port} profile={profile}{suffix}")
     return 0

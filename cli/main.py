@@ -23,7 +23,7 @@ if str(HERE.parent) not in sys.path:
 
 import click  # noqa: E402
 
-from cli.board import BOARDS_DIR  # noqa: E402
+from cli.board import active_boards_dir  # noqa: E402
 from cli.version import __version__  # noqa: E402
 
 
@@ -39,7 +39,6 @@ from cli.version import __version__  # noqa: E402
 @click.option("--quiet/--no-quiet", default=False)
 @click.option("--verbose/--no-verbose", default=False)
 @click.option("--json", "json_out", is_flag=True, help="Machine-readable output.")
-@click.option("--no-daemon", is_flag=True, help="Skip daemon; open serial per call.")
 @click.version_option(__version__, prog_name="esp32-devtool")
 @click.pass_context
 def cli(ctx: click.Context, **kwargs) -> None:
@@ -67,19 +66,17 @@ def flash(ctx: click.Context, profile: str) -> None:
 
 @cli.command()
 @click.option("--follow", "-f", is_flag=True)
-@click.option("--since", default=None)
 @click.option("--filter", "filter_pat", default=None)
 @click.option("--source", default="all", type=click.Choice(["usb", "udp", "all"]))
 @click.option("--level", default="I", type=click.Choice(["D", "I", "W", "E"]))
-@click.option("--no-color", is_flag=True)
 @click.option("--lines", default=100, type=int)
 @click.pass_context
-def logs(ctx: click.Context, follow: bool, since: str | None,
+def logs(ctx: click.Context, follow: bool,
          filter_pat: str | None, source: str, level: str,
-         no_color: bool, lines: int) -> None:
+         lines: int) -> None:
     from cli.commands.logs import run
     sys.exit(run(
-        ctx.obj, follow, since, filter_pat, source, level, no_color, lines,
+        ctx.obj, follow, filter_pat, source, level, lines,
         ctx.obj.get("json_out", False),
     ))
 
@@ -175,24 +172,27 @@ def daemon_start(port_path: str, idle_seconds: int, detach: bool) -> None:
 
 @daemon.command("stop")
 @click.option("--port", "port_path", required=True)
-def daemon_stop(port_path: str) -> None:
+@click.pass_context
+def daemon_stop(ctx: click.Context, port_path: str) -> None:
     from cli.commands.daemon_cli import stop
-    sys.exit(stop(port_path))
+    sys.exit(stop(port_path, json_out=ctx.obj.get("json_out", False)))
 
 
 @daemon.command("status")
-def daemon_status() -> None:
+@click.pass_context
+def daemon_status(ctx: click.Context) -> None:
     from cli.commands.daemon_cli import status
-    sys.exit(status())
+    sys.exit(status(json_out=ctx.obj.get("json_out", False)))
 
 
 @daemon.command("ring")
 @click.option("--port", "port_path", required=True)
 @click.option("--lines", default=2000, type=int)
 @click.option("--filter", "filter_pat", default=None)
-def daemon_ring(port_path: str, lines: int, filter_pat: str | None) -> None:
+@click.pass_context
+def daemon_ring(ctx: click.Context, port_path: str, lines: int, filter_pat: str | None) -> None:
     from cli.commands.daemon_cli import ring
-    sys.exit(ring(port_path, lines, filter_pat))
+    sys.exit(ring(port_path, lines, filter_pat, json_out=ctx.obj.get("json_out", False)))
 
 
 @cli.group()
@@ -223,10 +223,12 @@ def _try_register_extensions() -> None:
     boards in their boards-dir gets all extensions registered up-front; the
     rare collision is acceptable (last-wins; documented in CLAUDE.md).
     """
+    # Registration runs at import time: --boards-dir is not parsed yet.
+    # Extensions use env/default; per-command manifest lookup honors --boards-dir.
     try:
         from cli.board import list_manifests
         from cli.commands.extensions import register_dynamic
-        manifests = list_manifests(_active_boards_dir())
+        manifests = list_manifests(active_boards_dir())
     except Exception:
         return
     for m in manifests:
@@ -234,20 +236,6 @@ def _try_register_extensions() -> None:
             register_dynamic(cli, m)
         except Exception:
             continue
-
-
-def _active_boards_dir():
-    """Boards dir lookup used at module-import time, before Click parses
-    --boards-dir. Reads ESP32_DEVTOOL_BOARDS_DIR env var if set; otherwise
-    the bundled boards/ dir next to this file. The --boards-dir flag value
-    only affects per-command dispatch (commands re-resolve via context),
-    so extension registration always uses env-or-default."""
-    import os
-    from pathlib import Path
-    env = os.environ.get("ESP32_DEVTOOL_BOARDS_DIR")
-    if env:
-        return Path(env)
-    return BOARDS_DIR
 
 
 _try_register_extensions()

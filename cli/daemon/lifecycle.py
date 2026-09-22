@@ -24,6 +24,12 @@ def _runtime_dir() -> Path:
     return Path("/tmp/esp32-devtool")
 
 
+def ensure_runtime_dir() -> None:
+    runtime = _runtime_dir()
+    runtime.mkdir(parents=True, mode=0o700, exist_ok=True)
+    runtime.chmod(0o700)
+
+
 def port_hash(port: str) -> str:
     return hashlib.sha1(port.encode()).hexdigest()[:12]
 
@@ -52,19 +58,48 @@ class DaemonState(enum.Enum):
     SPAWNED = "spawned"
 
 
-def _ping(sock_path: Path, timeout_s: float = 1.0) -> bool:
+def _probe(sock_path: Path, timeout_s: float = 1.0) -> bool | None:
     if not sock_path.exists():
-        return False
+        return None
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(timeout_s)
-        s.connect(str(sock_path))
-        s.sendall(json.dumps({"kind": "ping"}).encode() + b"\n")
-        data = s.recv(1024)
-        s.close()
-        return b"ok" in data
-    except (TimeoutError, OSError):
-        return False
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout_s)
+            s.connect(str(sock_path))
+            s.sendall(b'{"kind":"ping"}\n')
+            return json.loads(s.recv(1024)).get("ok") is True
+    except (TimeoutError, OSError, ValueError):
+        return None
+
+
+def _ping(sock_path: Path, timeout_s: float = 1.0) -> bool:
+    return _probe(sock_path, timeout_s) is True
+
+
+def stop_daemon(port: str, timeout_s: float = 3.0) -> None:
+    """Ask only selected daemon to exit; never trust a pidfile as authority."""
+    try:
+        ensure_runtime_dir()
+    except OSError as e:
+        raise TransportUnavailable(f"daemon runtime directory unavailable: {e}") from e
+    path = socket_path_for(port)
+    if _probe(path) is None:
+        if path.exists():
+            raise TransportUnavailable(f"daemon socket for {port} is unresponsive")
+        return
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(1.0)
+            s.connect(str(path))
+            s.sendall(b'{"kind":"stop"}\n')
+            if json.loads(s.recv(1024)).get("ok") is not True:
+                raise TransportUnavailable(f"daemon for {port} refused stop")
+    except (TimeoutError, OSError, ValueError) as e:
+        raise TransportUnavailable(f"daemon stop failed for {port}: {e}") from e
+    deadline = time.monotonic() + timeout_s
+    while path.exists() and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if path.exists():
+        raise TransportUnavailable(f"daemon for {port} did not exit")
 
 
 def fetch_events(sock_path: Path, n: int = 200, timeout_s: float = 2.0) -> list[str]:
@@ -78,7 +113,12 @@ def fetch_events(sock_path: Path, n: int = 200, timeout_s: float = 2.0) -> list[
         s.connect(str(sock_path))
         s.sendall((json.dumps({"kind": "events", "n": n}) + "\n").encode())
         buf = b""
+        deadline = time.monotonic() + timeout_s
         while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return []
+            s.settimeout(remaining)
             chunk = s.recv(65536)
             if not chunk:
                 break
@@ -115,10 +155,15 @@ def ensure_daemon(
     spawn_timeout_s: float = 12.0,
 ) -> DaemonState:
     sock_path = socket_path_for(port)
-    sock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_runtime_dir()
 
-    if _ping(sock_path):
+    health = _probe(sock_path)
+    if health is True:
         return DaemonState.ALREADY_RUNNING
+    if health is False:
+        raise TransportUnavailable(f"daemon for {port} is reconnecting serial")
+    if sock_path.exists():
+        raise TransportUnavailable(f"daemon socket for {port} is unresponsive")
 
     spawn(port)
     deadline = time.time() + spawn_timeout_s

@@ -1,9 +1,7 @@
 // handlers/audio_inject.cc — POST /audio/inject. Body is raw PCM16LE mono.
 // Pushes samples into the device's inject ring; subsequent AudioService
 // codec reads drain the ring before falling back to the real mic path.
-// Response: {"ok":true,"samples":N} where N is the total sample count from
-// the request body (not the provider's accepted count — the ring may drop
-// on overflow but the HTTP contract is "we received N samples").
+// Response: {"ok":true,"samples":N} only when N samples were queued.
 
 #include <esp_http_server.h>
 #include <esp_log.h>
@@ -24,14 +22,28 @@ static const char* TAG = "esp32_devtool.audio.inject";
 // not the ring capacity.
 static constexpr size_t kMaxInjectBytes = 2 * 1024 * 1024;
 
-// Default rate when client omits parsing the content-type. The pop-side
-// (agent_audio_inject_pop_samples) validates 16 kHz; mismatched rate means
-// the ring stays full and the codec path runs as normal.
+// Only rate accepted by cube mic injection pop path.
 static constexpr int kDefaultSampleRate = 16000;
 
 static esp_err_t audio_inject_handler(httpd_req_t* req) {
-    size_t total = req->content_len;
-    if (total == 0 || total > kMaxInjectBytes || (total % sizeof(int16_t)) != 0) {
+    if (req->content_len <= 0) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"bad_content_length\"}");
+        return ESP_OK;
+    }
+    // Only 16 kHz mono PCM enters the cube's mic path. Reject other rates
+    // rather than reporting queued samples that its pop-side will not play.
+    constexpr char kContentType[] = "audio/L16; rate=16000; channels=1";
+    char content_type[sizeof(kContentType)];
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", content_type,
+                                    sizeof(content_type)) != ESP_OK ||
+        std::strcmp(content_type, kContentType) != 0) {
+        httpd_resp_set_status(req, "415 Unsupported Media Type");
+        httpd_resp_sendstr(req, "{\"error\":\"bad_audio_format\"}");
+        return ESP_OK;
+    }
+    size_t total = static_cast<size_t>(req->content_len);
+    if (total > kMaxInjectBytes || (total % sizeof(int16_t)) != 0) {
         ESP_LOGW(TAG, "bad content_len=%u", (unsigned)total);
         httpd_resp_set_status(req, "413 Payload Too Large");
         httpd_resp_sendstr(req, "{\"error\":\"too_big_empty_or_unaligned\"}");
@@ -61,21 +73,28 @@ static esp_err_t audio_inject_handler(httpd_req_t* req) {
     }
 
     size_t samples = total / sizeof(int16_t);
-    int rate = kDefaultSampleRate;
+    constexpr int rate = kDefaultSampleRate;
     ESP_LOGI(TAG, "inject samples=%u bytes=%u rate=%d",
              (unsigned)samples, (unsigned)total, rate);
 
-    int rc = esp32_devtool_invoke_audio_inject(buf, samples, rate);
+    size_t accepted = 0;
+    int rc = esp32_devtool_invoke_audio_inject_counted(buf, samples, rate, &accepted);
     free(buf);
 
     char body[64];
+    if (accepted > samples) rc = -1;
+    if (rc != 0) accepted = 0;
     std::snprintf(body, sizeof(body),
                   "{\"ok\":%s,\"samples\":%u}",
-                  rc == 0 ? "true" : "false", (unsigned)samples);
+                  rc == 0 && accepted == samples ? "true" : "false", (unsigned)accepted);
     httpd_resp_set_type(req, "application/json");
     if (rc != 0) {
-        ESP_LOGW(TAG, "invoke_audio_inject failed rc=%d (provider unset)", rc);
+        ESP_LOGW(TAG, "invoke_audio_inject failed rc=%d (counted provider unset or failed)", rc);
         httpd_resp_set_status(req, "503 Service Unavailable");
+    } else if (accepted < samples) {
+        ESP_LOGW(TAG, "inject partial requested=%u accepted=%u",
+                 (unsigned)samples, (unsigned)accepted);
+        httpd_resp_set_status(req, "409 Conflict");
     }
     httpd_resp_sendstr(req, body);
     return ESP_OK;

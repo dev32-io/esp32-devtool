@@ -6,6 +6,7 @@ chip: esp32-s3                            # required enum: esp32-s3 | esp32-s2 |
 firmware_path: <your-firmware-dir>        # optional str; required for `flash`
 build_artifact: ~                         # optional str; ELF filename in <firmware_path>/build/; auto if exactly one .elf
 build_profiles: [debug, prod]             # required list[str]
+flash_timeout_s: 600                      # optional positive finite seconds <= 3600; build + flash deadline
 
 usb:
   vid: 0x303A                             # optional int

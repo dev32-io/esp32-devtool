@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import glob as glob_mod
+import math
 import os as _os
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -9,7 +10,7 @@ from pathlib import Path
 
 import yaml
 
-from cli.errors import BoardNotFound
+from cli.errors import BadUsage, BoardNotFound
 
 # Repo-relative boards dir, resolved once at import time. Every command module
 # used to recompute this from its own `__file__`; centralizing keeps the path
@@ -85,6 +86,7 @@ class BoardManifest:
     extensions: list[Extension]
     source_path: Path
     build_artifact: str | None = None
+    flash_timeout_s: float = 600.0
 
 
 def load_manifest(path: Path) -> BoardManifest:
@@ -99,6 +101,10 @@ def load_manifest(path: Path) -> BoardManifest:
     usb_raw = raw.get("usb") or {}
     http_raw = raw.get("http") or {}
     relay_raw = raw.get("log_relay") or {}
+    flash_timeout_s = raw.get("flash_timeout_s", 600.0)
+    if (isinstance(flash_timeout_s, bool) or not isinstance(flash_timeout_s, (int, float))
+            or not 0 < flash_timeout_s <= 3600 or not math.isfinite(flash_timeout_s)):
+        raise ValueError(f"{path}: flash_timeout_s must be a finite number in (0, 3600]")
 
     caps: dict[str, Capability] = {}
     for verb, body in (raw.get("capabilities") or {}).items():
@@ -147,6 +153,7 @@ def load_manifest(path: Path) -> BoardManifest:
         extensions=exts,
         source_path=path,
         build_artifact=raw.get("build_artifact"),
+        flash_timeout_s=float(flash_timeout_s),
     )
 
 
@@ -166,13 +173,18 @@ def _default_scan_ports(glob_pat: str) -> list[str]:
 def resolve_usb_port(manifest: BoardManifest, override: str | None = None) -> str | None:
     """Resolve the board USB port: override → manifest glob → None.
 
-    Returns the first matching device path, or None if no port detected.
+    Returns a unique device path, or None if no port detected.
     Callers raise typed ``DevtoolError`` if None matters at their layer.
     """
     if override:
         return override
     pattern = (manifest.usb.port_glob if manifest.usb else None) or "/dev/cu.usbmodem*"
     matches = sorted(glob_mod.glob(pattern))
+    if len(matches) > 1:
+        raise BoardNotFound(
+            f"multiple USB ports match {pattern}: {matches}",
+            next_step="pass --port <path> to select the target",
+        )
     return matches[0] if matches else None
 
 
@@ -180,6 +192,7 @@ def detect_board(
     *,
     boards_dir: Path,
     override_name: str | None,
+    override_port: str | None = None,
     scan_ports: Callable[[str], list[str]] = _default_scan_ports,
 ) -> BoardManifest:
     # Fast path: the very common ``--board <name>`` (and
@@ -189,10 +202,16 @@ def detect_board(
     if override_name is not None:
         candidate = boards_dir / f"{override_name}.yaml"
         if candidate.exists():
-            return load_manifest(candidate)
+            try:
+                return load_manifest(candidate)
+            except ValueError as e:
+                raise BadUsage(str(e)) from e
         # Fall through so the existing error path can list available names.
 
-    manifests = list_manifests(boards_dir)
+    try:
+        manifests = list_manifests(boards_dir)
+    except ValueError as e:
+        raise BadUsage(str(e)) from e
     by_name = {m.name: m for m in manifests}
 
     if override_name is not None:
@@ -210,17 +229,18 @@ def detect_board(
             continue
         ports = scan_ports(glob_pat)
         for p in ports:
-            candidates.append((m, p))
+            if override_port is None or p == override_port:
+                candidates.append((m, p))
 
     if not candidates:
         raise BoardNotFound(
             "no board connected on USB",
             next_step="pass --board <name> explicitly, or check the cable",
         )
-    if len({m.name for m, _ in candidates}) > 1:
+    if len(candidates) > 1:
         names = sorted({m.name for m, _ in candidates})
         raise BoardNotFound(
-            f"multiple boards match: {names}",
+            f"multiple boards or ports match: {names}",
             next_step="disambiguate with --board=<name> --port=<path>",
         )
     return candidates[0][0]

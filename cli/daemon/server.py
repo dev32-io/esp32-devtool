@@ -1,6 +1,6 @@
 """Port-holding daemon for esp32-devtool. Generalized from the legacy per-board daemon.
 
-Opens the USB-CDC port ONCE and holds it across many client connections.
+Holds the USB-CDC port across client connections; reopens after a disconnect.
 Each client connects via Unix socket; the daemon writes CMDs to serial,
 reads matching responses from the event ring, and returns them.
 
@@ -8,13 +8,14 @@ Why a daemon? The ESP32-S3 USB-Serial-JTAG hardware interprets DTR/RTS
 toggles as auto-reset / boot-mode signals. macOS sends a CDC
 SET_CONTROL_LINE_STATE on every open(), which resets the cube. With
 each tool invocation opening + closing the port, the cube reset-loops and
-never reaches IDLE. The daemon opens the port exactly once.
+never reaches IDLE. The daemon only reopens after a serial failure.
 
 Auto-exits after --idle-seconds of no client activity.
 """
 from __future__ import annotations
 
 import argparse
+import errno
 import json
 import os
 import socket
@@ -27,6 +28,7 @@ from pathlib import Path
 import serial
 
 from cli.daemon.lifecycle import (
+    ensure_runtime_dir,
     pidfile_path_for,
     socket_path_for,
 )
@@ -37,6 +39,10 @@ RSP_PREFIX = "<<< RSP "
 EVT_PREFIX = "<<< EVT "
 CHECKPOINT_PREFIX = ">>> CHECKPOINT "
 READY_MARKER = ">>> READY"
+
+
+class _SocketOccupied(Exception):
+    """Another starter already owns this port's socket."""
 
 
 class CubeDaemon:
@@ -50,6 +56,7 @@ class CubeDaemon:
         # ~3 MB host RAM worst-case for a long-running daemon.
         self.event_log: deque[str] = deque(maxlen=20000)
         self.read_lock = threading.Lock()
+        self.serial_lock = threading.Lock()
         self.stop = threading.Event()
 
     def _open_port(self) -> None:
@@ -57,21 +64,35 @@ class CubeDaemon:
         s.port = self.port_name
         s.baudrate = 115200
         s.timeout = 0.1
+        s.write_timeout = 1.0
         s.dsrdtr = False
         s.rtscts = False
         s.dtr = False
         s.rts = False
         s.open()
-        self.ser = s
+        with self.serial_lock:
+            if self.stop.is_set():
+                s.close()
+            else:
+                self.ser = s
 
     def reader_thread(self) -> None:
-        assert self.ser is not None
         while not self.stop.is_set():
             try:
-                line = self.ser.readline().decode("utf-8", errors="replace").rstrip()
-            except Exception as e:
-                self.event_log.append(f"__reader_exc__ {e}")
-                time.sleep(0.3)
+                ser = self.ser
+                if ser is None:
+                    self._open_port()
+                    ser = self.ser
+                    if ser is None:
+                        break
+                line = ser.readline().decode("utf-8", errors="replace").rstrip()
+            except (serial.SerialException, OSError) as e:
+                with self.serial_lock:
+                    if ser is not None and self.ser is ser:
+                        self.ser = None
+                        ser.close()
+                self.event_log.append(f"__reader_exc__ {type(e).__name__}")
+                self.stop.wait(0.5)
                 continue
             if not line:
                 continue
@@ -79,15 +100,20 @@ class CubeDaemon:
                 self.event_log.append(line)
 
     def send_cmd(self, body: dict, rpc_id, timeout: float) -> dict:
-        assert self.ser is not None
         # Mark a baseline sentinel in the ring so we can find our cutoff
         # without index arithmetic against a maxlen-bounded deque.
         sentinel = f"__sentinel__ {time.time()}"
         with self.read_lock:
             self.event_log.append(sentinel)
         line = ">>> CMD " + json.dumps(body) + "\n"
-        self.ser.write(line.encode())
-        self.ser.flush()
+        try:
+            with self.serial_lock:
+                if self.ser is None:
+                    raise serial.SerialException("serial disconnected")
+                self.ser.write(line.encode())
+        except (serial.SerialException, OSError):
+            return {"jsonrpc": "2.0", "id": rpc_id,
+                    "error": {"code": -32002, "message": "serial disconnected"}}
         deadline = time.time() + timeout
         while time.time() < deadline:
             with self.read_lock:
@@ -118,25 +144,32 @@ class CubeDaemon:
             return list(self.event_log)[-n:]
 
     def serve(self, sock_path_str: str, pid_path_str: str) -> None:
-        try:
-            os.unlink(sock_path_str)
-        except FileNotFoundError:
-            pass
         srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        srv.bind(sock_path_str)
-        srv.listen(8)
-        srv.settimeout(1.0)
-        with open(pid_path_str, "w") as f:
-            f.write(str(os.getpid()))
-
-        self._open_port()
-        threading.Thread(target=self.reader_thread, daemon=True).start()
-
-        sys.stderr.write(
-            f"[{TAG}] listening on {sock_path_str} (pid={os.getpid()})\n"
-        )
-
         try:
+            # bind is the ownership claim. Never unlink an existing socket here.
+            srv.bind(sock_path_str)
+        except OSError as e:
+            srv.close()
+            if e.errno in (errno.EADDRINUSE, errno.EEXIST):
+                raise _SocketOccupied from e
+            raise
+        owner = None
+        pid_owner = None
+        try:
+            owner = os.lstat(sock_path_str)
+            srv.listen(8)
+            srv.settimeout(1.0)
+            with open(pid_path_str, "w") as f:
+                f.write(str(os.getpid()))
+                pid_owner = os.fstat(f.fileno())
+            self._open_port()
+            _alias_legacy_socket(Path(sock_path_str))
+            threading.Thread(target=self.reader_thread, daemon=True).start()
+
+            sys.stderr.write(
+                f"[{TAG}] listening on {sock_path_str} (pid={os.getpid()})\n"
+            )
+
             while not self.stop.is_set():
                 if time.time() - self.last_activity > self.idle_seconds:
                     sys.stderr.write(f"[{TAG}] idle exit\n")
@@ -152,23 +185,29 @@ class CubeDaemon:
         finally:
             self.stop.set()
             srv.close()
+            with self.serial_lock:
+                if self.ser:
+                    self.ser.close()
+                    self.ser = None
             try:
+                current = os.lstat(sock_path_str)
+                owns_socket = owner is not None and os.path.samestat(current, owner)
+            except FileNotFoundError:
+                owns_socket = False
+            if owns_socket:
+                # Drop alias before releasing socket, so next owner cannot inherit it.
+                try:
+                    if (_LEGACY_CUBE_SOCK.is_symlink()
+                            and _LEGACY_CUBE_SOCK.readlink() == Path(sock_path_str)):
+                        _LEGACY_CUBE_SOCK.unlink()
+                except OSError:
+                    pass
                 os.unlink(sock_path_str)
-            except OSError:
-                pass
             try:
-                os.unlink(pid_path_str)
-            except OSError:
+                if pid_owner is not None and os.path.samestat(os.lstat(pid_path_str), pid_owner):
+                    os.unlink(pid_path_str)
+            except FileNotFoundError:
                 pass
-            # Drop the legacy-alias symlink so a future legacy spawn isn't
-            # confused by a dangling pointer.
-            try:
-                if _LEGACY_CUBE_SOCK.is_symlink():
-                    _LEGACY_CUBE_SOCK.unlink()
-            except OSError:
-                pass
-            if self.ser:
-                self.ser.close()
 
     def _handle_client(self, conn: socket.socket) -> None:
         try:
@@ -239,7 +278,10 @@ class CubeDaemon:
                 lines = self.get_recent_events(req.get("n", 200))
                 conn.sendall(json.dumps({"events": lines}).encode())
             elif kind == "ping":
-                conn.sendall(json.dumps({"ok": True}).encode())
+                conn.sendall(json.dumps({"ok": self.ser is not None}).encode())
+            elif kind == "stop":
+                self.stop.set()
+                conn.sendall(b'{"ok":true}')
             else:
                 conn.sendall(json.dumps({"error": f"unknown kind: {kind}"}).encode())
             self.last_activity = time.time()
@@ -248,7 +290,6 @@ class CubeDaemon:
 
 
 _LEGACY_CUBE_SOCK = Path("/tmp/cube-daemon.sock")
-_LEGACY_CUBE_PID = Path("/tmp/cube-daemon.pid")
 
 
 def _alias_legacy_socket(sock_path: Path) -> None:
@@ -260,13 +301,18 @@ def _alias_legacy_socket(sock_path: Path) -> None:
     method, params}`` shape and the new ``{kind:cmd, json: <jsonrpc>}``
     shape, so symlinking the legacy path at this single daemon avoids
     spawning a second port-holder. AF_UNIX symlinks work on macOS/Linux
-    and follow on connect().
+    and follow on connect(). Do not replace an alias owned by another daemon.
     """
-    try:
-        if _LEGACY_CUBE_SOCK.is_symlink() or _LEGACY_CUBE_SOCK.exists():
+    if _LEGACY_CUBE_SOCK.is_symlink():
+        if _LEGACY_CUBE_SOCK.exists():
+            return
+        # Reclaim only a symlink whose target is gone; never replace a live alias.
+        try:
             _LEGACY_CUBE_SOCK.unlink()
-    except OSError:
-        pass
+        except OSError:
+            return
+    elif _LEGACY_CUBE_SOCK.exists():
+        return
     try:
         _LEGACY_CUBE_SOCK.symlink_to(sock_path)
     except OSError as e:
@@ -279,23 +325,13 @@ def _alias_legacy_socket(sock_path: Path) -> None:
 def serve(port: str, idle_seconds: int) -> int:
     sock_path = socket_path_for(port)
     pid_path = pidfile_path_for(port)
-    sock_path.parent.mkdir(parents=True, exist_ok=True)
+    ensure_runtime_dir()
 
-    if pid_path.exists():
-        try:
-            pid = int(pid_path.read_text().strip())
-            os.kill(pid, 0)
-            sys.stderr.write(f"[{TAG}] already running (pid={pid})\n")
-            return 1
-        except (ProcessLookupError, ValueError, OSError):
-            pid_path.unlink(missing_ok=True)
-
-    _alias_legacy_socket(sock_path)
-    # Drop any stale legacy pidfile so HIL helpers don't think a separate
-    # daemon process owns /tmp/cube-daemon.sock (they ping-then-spawn).
-    _LEGACY_CUBE_PID.unlink(missing_ok=True)
-
-    CubeDaemon(port, idle_seconds).serve(str(sock_path), str(pid_path))
+    try:
+        CubeDaemon(port, idle_seconds).serve(str(sock_path), str(pid_path))
+    except _SocketOccupied:
+        sys.stderr.write(f"[{TAG}] socket already exists on {port}; remove stale socket manually\n")
+        return 1
     return 0
 
 

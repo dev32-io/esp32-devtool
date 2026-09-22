@@ -1,164 +1,68 @@
-# Using esp32-devtool with AI Coding Agents
+# Using esp32-devtool with coding agents
 
-## Why agent-first matters
+`esp32-devtool` is a normal Click CLI. No agent plugin required. Read
+[repository guidance](../AGENTS.md) in this checkout. For a separate firmware
+project, copy relevant guidance into that project's `AGENTS.md` from this
+checkout. Installed CLI packages do not include repository guidance.
 
-ESP32 development was traditionally a tight human loop: edit code,
-`idf.py flash`, watch `idf.py monitor`, eyeball the OLED, repeat. Every
-step assumed a human eye on the terminal and a hand on the board.
-
-LLM-driven coding agents — Claude Code, Aider, Cursor agents — broke that
-loop. They can write firmware, but they can't see the display, can't
-parse half-broken serial output reliably, and can't recover from a wedged
-board without structured feedback.
-
-`esp32-devtool` is the surface that makes agentic ESP32 dev real:
-
-1. **`--json` everywhere**: every command emits machine-readable output
-   when asked. No screen-scraping.
-2. **Stable exit codes**: 0/2/3/4/5/6 mean specific things. The agent
-   can branch on them.
-3. **Self-healing transport**: daemon auto-spawn, port auto-detect, HTTP
-   reachability checks with named alternatives.
-4. **Capability introspection**: `esp32-devtool info --json` tells the
-   agent what the connected board can do. No hardcoded assumptions.
-5. **Firmware companion ships visibility**: HTTP `/screenshot` lets the
-   agent see what the board renders.
-
-## Loop pattern: edit → flash → assert → drive → screenshot
-
-A canonical agent dev loop using devtool:
-
-```
-1. Edit firmware source.
-2. esp32-devtool flash --profile debug --json
-   → on success: assert exit code == 0.
-3. esp32-devtool info --json | jq -r '.firmware'
-   → assert the new git SHA is present.
-4. esp32-devtool cmd state --json
-   → assert app reached expected state machine state.
-5. esp32-devtool screenshot --out /tmp/after.png
-   → visual diff against /tmp/before.png, or pass to a vision-LLM for review.
-6. esp32-devtool logs --since 10s --level W --json
-   → assert no warnings/errors in the last 10 seconds.
-```
-
-Each step has a structured failure mode. The agent can decide whether to
-retry, escalate, or roll back the change.
-
-## Self-healing patterns
-
-### Daemon timeout / wedged port
+## Inspect before acting
 
 ```bash
-esp32-devtool cmd state
-# exit 6 (timeout)
-esp32-devtool restart
-esp32-devtool cmd state
-# exit 0
+esp32-devtool --help
+esp32-devtool info --help
+esp32-devtool --json info
 ```
 
-If `restart` also times out, the board is hard-wedged; physical
-recovery (unplug, hold BOOT, replug) is the next step. The CLI prints
-this as a "next step" hint on timeout.
+Global options (`--json`, `--board`, `--http`, etc.) precede command.
+`--help` is text, not JSON. `info` returns board-provided `/info` JSON,
+including firmware, capabilities and endpoints when provider supplies them.
+Check exit status before parsing output: output and error JSON vary by command.
+Do not assume every board exposes same verbs or HTTP handlers.
+Core commands select manifests from `--boards-dir`, then
+`ESP32_DEVTOOL_BOARDS_DIR`, then bundled boards. Extensions register at import
+time: set `ESP32_DEVTOOL_BOARDS_DIR=/path/to/boards` before launching the CLI.
+The `--boards-dir` flag alone does not register that directory's extensions.
+Do not infer selected board from help alone.
 
-### HTTP unreachable (pre-WiFi or WiFi disconnected)
+## Local dev loop (only with approved test board)
 
-```bash
-esp32-devtool screenshot
-# exit 4 (transport unavailable)
-esp32-devtool logs --follow --filter wifi
-# look for "wifi: connected" or assert via cmd verbs
-esp32-devtool cmd wifi.reconnect
-esp32-devtool screenshot
-# exit 0
-```
+1. Inspect manifest and `esp32-devtool --json info`; verify capabilities and
+   confirm **intended manifest, USB port and HTTP target** against test-board
+   identity before any mutation. An explicit `--board` only chooses a manifest;
+   it does not prove attached device identity. Stop if target cannot be confirmed.
+2. Confirm build and flash are authorized before running
+   `esp32-devtool flash --profile debug`. Do not flash prod profile without
+   operator confirmation. Provision credentials explicitly using the project's
+   instructions first; `flash` does not run credential-baking extensions.
+   Manifest `flash_timeout_s` defaults to 600 seconds (maximum 3600); it bounds
+   build + flash, not post-flash readiness. IDF output is suppressed to avoid
+   leaking credentials; failures report exit status or timeout, not process output.
+   `debug` success requires companion daemon, `>>> READY` in its ring and a
+   `state` beyond pre-WiFi. Companion emits this marker at startup, before
+   WiFi; cube application may also emit same marker only after gateway WebSocket
+   connects. Neither ring match nor settled companion state proves application
+   runtime is healthy; confirm runtime separately. `prod`
+   strips the companion: flash success reports `verification: flash-only` and
+   means only that idf.py build + flash exited successfully. No daemon respawn,
+   companion state check, boot check, or runtime smoke is performed for prod.
+3. Check exit status after each call; use
+   `esp32-devtool --json cmd <manifest-verb>` for available verbs.
+4. Use `esp32-devtool screenshot --out /tmp/after.png` if screenshot provider
+   is configured. Firmware sends raw RGB565 over HTTP; host converts to PNG
+   (or JPEG if Pillow installed). `--format rgb565` saves raw bytes.
+5. Use `esp32-devtool audio record --duration 1000 --out /tmp/capture.pcm`
+   for buffered microphone capture; `audio inject --in /tmp/input.pcm` sends
+   PCM16 to microphone injection path, **not speaker**.
+   `audio play --in /tmp/input.pcm` invokes separate USB-CDC `audio.play_pcm`
+   playback verb, if available.
 
-### Board not detected
+Never log secrets or share private device audio or user content. If a
+transport fails, inspect board connection and available transport; do not
+assume restart or reflashing is safe. HTTP behavior: [HTTP contract](HTTP-CONTRACT.md). Board
+setup: [manifest guide](BOARD-MANIFEST.md).
 
-```bash
-esp32-devtool info
-# exit 3 (board not found)
-esp32-devtool info --port /dev/cu.usbmodem1234
-# or set --board explicitly
-```
+## Origin
 
-## Worked example: bring up a new board with Claude Code in one hour
-
-Suppose you've just plugged in an unfamiliar ESP32-S3 dev board and you
-want to get devtool working with it.
-
-**Step 1**: Write a minimal manifest.
-
-```bash
-mkdir -p ~/my-board/devtool/boards
-cat > ~/my-board/devtool/boards/myboard.yaml <<EOF
-name: myboard
-display_name: "My S3 board"
-chip: esp32-s3
-firmware_path: /Users/me/myboard/firmware
-build_profiles: [debug]
-usb:
-  port_glob: "/dev/cu.usbmodem*"
-http:
-  enabled: false
-capabilities:
-  flash: { transport: usb-cdc, require: [usb] }
-  logs:  { transport: usb-cdc, sources: [usb] }
-  cmd:   { transport: usb-cdc, require: [daemon] }
-verbs: [state, restart]
-EOF
-```
-
-**Step 2**: Tell the agent: "Use `ESP32_DEVTOOL_BOARDS_DIR=~/my-board/devtool/boards
-esp32-devtool --board myboard` for every devtool call. Verify `esp32-devtool info` works
-before touching anything else."
-
-Note: prefer the env var over `--boards-dir` flag for agents — the env
-var triggers extension registration at import time, so any manifest
-extensions show up in `--help` immediately.
-
-**Step 3**: Have the agent install the firmware companion:
-
-```bash
-cd ~/myboard/firmware
-idf.py add-dependency "dev32/esp32_devtool_companion^0.1.0"
-# add the bootstrap call in app_main
-```
-
-**Step 4**: Flash, then iterate. The agent writes verbs
-(`devtool_register_verb("state", ...)`), flashes, calls them via
-`esp32-devtool cmd state`, and uses the JSON response to confirm state
-transitions.
-
-Total time from unboxing to the agent driving your custom verbs:
-typically under an hour.
-
-## CLAUDE.md integration
-
-The top-level `CLAUDE.md` in this repo is meant to be loaded into any
-Claude Code session that touches devtool. It's terse and pattern-focused
-— exit code table, invocation patterns, when to use `--json`. Symlink
-or copy it into your project's `.claude/rules/` directory:
-
-```bash
-# After `pipx install esp32-devtool`, the CLAUDE.md lives next to the package data:
-cp $(python3 -c "import cli; from pathlib import Path; print(Path(cli.__file__).parent.parent / 'CLAUDE.md')") \
-   .claude/rules/esp32-devtool.md
-```
-
-Or just clone the repo for a copy:
-
-```bash
-git clone https://github.com/dev32-io/esp32-devtool.git /tmp/esp32-devtool
-cp /tmp/esp32-devtool/CLAUDE.md .claude/rules/esp32-devtool.md
-```
-
-## Origin story
-
-devtool started as nine shell scripts and four Python helpers in the
-[Sentient cube](https://github.com/sentient-cube/sentient) monorepo —
-each tool a one-off bandage for a different agentic dev-loop pain point.
-When the count crossed a dozen and an agent had to juggle three
-incompatible argument shapes to flash, snapshot, and dispatch a verb in
-sequence, the unification became inevitable. The result is what you see
-here.
+This CLI originated in the [Sentient cube](https://github.com/sentient-cube/sentient)
+dev loop. Historical extraction notes in `docs/specs/` and
+`docs/superpowers/plans/` are records, not setup instructions.

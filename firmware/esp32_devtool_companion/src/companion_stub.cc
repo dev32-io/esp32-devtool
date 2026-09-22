@@ -18,5 +18,6 @@ void esp32_devtool_set_snapshot_provider(esp32_devtool_snapshot_provider_t) {}
 void esp32_devtool_set_touch_provider(esp32_devtool_touch_provider_t) {}
 void esp32_devtool_set_audio_record_provider(esp32_devtool_audio_record_provider_t) {}
 void esp32_devtool_set_audio_inject_provider(esp32_devtool_audio_inject_provider_t) {}
+void esp32_devtool_set_audio_inject_counted_provider(esp32_devtool_audio_inject_counted_provider_t) {}
 
 }

@@ -70,6 +70,27 @@ def test_ensure_daemon_returns_existing(short_tmp):
     srv.close()
 
 
+def test_ensure_daemon_rejects_unhealthy_serial_without_respawn(short_tmp):
+    port = "/dev/cu.usbmodem101"
+    sock_path = socket_path_for(port)
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(sock_path))
+    srv.listen(1)
+
+    def fake_daemon():
+        c, _ = srv.accept()
+        c.recv(4096)
+        c.sendall(b'{"ok":false}')
+        c.close()
+        srv.close()
+
+    t = threading.Thread(target=fake_daemon)
+    t.start()
+    with pytest.raises(TransportUnavailable, match="reconnecting serial"):
+        ensure_daemon(port, spawn=lambda p: pytest.fail("must not spawn"))
+    t.join(timeout=2)
+
+
 def test_ensure_daemon_spawns_when_socket_dead(short_tmp):
     port = "/dev/cu.usbmodem101"
     spawned: list[str] = []

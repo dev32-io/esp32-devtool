@@ -22,6 +22,10 @@ class DevtoolError(Exception):
         self.next_step = next_step or self.next_step
 
 
+class BadUsage(DevtoolError):
+    exit_code = EXIT_BAD_USAGE
+
+
 class BoardNotFound(DevtoolError):
     exit_code = EXIT_BOARD_NOT_FOUND
 
