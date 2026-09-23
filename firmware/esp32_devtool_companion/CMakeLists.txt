@@ -1,4 +1,9 @@
-set(DEVTOOL_REQ esp_http_server esp_netif esp_event json lvgl__lvgl)
+set(DEVTOOL_REQ esp_http_server esp_netif esp_event lvgl__lvgl)
+if(IDF_VERSION_MAJOR GREATER_EQUAL 6)
+    list(APPEND DEVTOOL_REQ espressif__cjson)
+else()
+    list(APPEND DEVTOOL_REQ json)
+endif()
 
 if(CONFIG_ESP32_DEVTOOL_COMPANION_ENABLE)
     set(DEVTOOL_SRCS

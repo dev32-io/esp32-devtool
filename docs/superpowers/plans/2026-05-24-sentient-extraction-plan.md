@@ -1,6 +1,8 @@
 # esp32-devtool Sentient Extraction Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> Historical extraction record (2026-05-24). Not current repository guidance or an executable plan. See [AGENTS.md](../../../AGENTS.md) for current instructions.
+
+> **Historical worker instruction (superseded):** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extract `esp32/devtool/` from the Sentient monorepo into a standalone OSS repo at `github.com/dev32-io/esp32-devtool`, with zero Sentient coupling, MIT license, PyPI-publishable, and first-class agentic + adb-style workflows.
 

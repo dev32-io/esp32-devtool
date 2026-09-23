@@ -142,15 +142,31 @@ extern "C" int esp32_devtool_invoke_audio_record(int16_t* dst, size_t samples,
     return s_audio_record_fn(dst, samples, sample_rate);
 }
 
-namespace { esp32_devtool_audio_inject_provider_t s_audio_inject_fn = nullptr; }
+namespace {
+esp32_devtool_audio_inject_provider_t s_audio_inject_fn = nullptr;
+esp32_devtool_audio_inject_counted_provider_t s_audio_inject_counted_fn = nullptr;
+}
 
 extern "C" void esp32_devtool_set_audio_inject_provider(
         esp32_devtool_audio_inject_provider_t fn) {
     s_audio_inject_fn = fn;
 }
 
-extern "C" int esp32_devtool_invoke_audio_inject(const int16_t* src, size_t samples,
-                                                  int sample_rate) {
+extern "C" int esp32_devtool_invoke_audio_inject(
+        const int16_t* src, size_t samples, int sample_rate) {
     if (s_audio_inject_fn == nullptr) return -1;
     return s_audio_inject_fn(src, samples, sample_rate);
+}
+
+extern "C" void esp32_devtool_set_audio_inject_counted_provider(
+        esp32_devtool_audio_inject_counted_provider_t fn) {
+    s_audio_inject_counted_fn = fn;
+}
+
+extern "C" int esp32_devtool_invoke_audio_inject_counted(
+        const int16_t* src, size_t samples, int sample_rate, size_t* accepted) {
+    // Legacy provider cannot prove how much was queued; do not dispatch it
+    // through HTTP and falsely report full acceptance.
+    if (s_audio_inject_counted_fn == nullptr) return -1;
+    return s_audio_inject_counted_fn(src, samples, sample_rate, accepted);
 }

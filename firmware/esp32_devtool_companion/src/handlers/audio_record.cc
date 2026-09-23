@@ -15,6 +15,7 @@
 #include "esp32_devtool/companion.h"
 #include "esp32_devtool/endpoints.h"
 #include "companion_internal.h"
+#include "record_limits.h"
 
 static const char* TAG = "esp32_devtool.audio.record";
 
@@ -22,27 +23,24 @@ static const char* TAG = "esp32_devtool.audio.record";
 static constexpr int kDefaultDurationMs = 1000;
 static constexpr int kDefaultSampleRate = 16000;
 
-// Capture cap. AudioService::RecordPcm itself caps at 1 s on the codec side;
-// the HTTP wrapper still trims the user's request to a sane upper bound so
-// we don't allocate megabytes of PSRAM for a typo'd query string.
-static constexpr int kMaxDurationMs = 10000;
+// Match cube RecordPcm's one-second limit; at 48 kHz this allocates at most
+// 96 KB, not the multi-MB allocation an unchecked query could request.
 
 static esp_err_t audio_record_handler(httpd_req_t* req) {
     char query[64] = {};
     int duration_ms = kDefaultDurationMs;
     int sample_rate = kDefaultSampleRate;
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        char v[16];
-        if (httpd_query_key_value(query, "duration_ms", v, sizeof(v)) == ESP_OK) {
-            duration_ms = atoi(v);
-        }
-        if (httpd_query_key_value(query, "sample_rate", v, sizeof(v)) == ESP_OK) {
-            sample_rate = atoi(v);
-        }
+    size_t query_len = httpd_req_get_url_query_len(req);
+    bool valid = query_len < sizeof(query);
+    if (valid && query_len != 0) {
+        valid = httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK;
+        if (valid) valid = devtool_parse_record_query(query, &duration_ms, &sample_rate);
     }
-    if (duration_ms <= 0) duration_ms = kDefaultDurationMs;
-    if (duration_ms > kMaxDurationMs) duration_ms = kMaxDurationMs;
-    if (sample_rate <= 0) sample_rate = kDefaultSampleRate;
+    if (!valid || static_cast<size_t>(duration_ms) * sample_rate < 1000U) {
+        httpd_resp_set_status(req, "400 Bad Request");
+        httpd_resp_sendstr(req, "{\"error\":\"bad_record_query\"}");
+        return ESP_OK;
+    }
 
     size_t samples = (size_t)duration_ms * (size_t)sample_rate / 1000U;
     size_t bytes = samples * sizeof(int16_t);

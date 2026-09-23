@@ -11,7 +11,8 @@ venv/
 
 # uv
 .uv-cache/
-uv.lock                      # regenerate; not strictly required to commit
+# Regenerate locally; dependency locking is not part of this repository's policy.
+uv.lock
 
 # Test
 .pytest_cache/

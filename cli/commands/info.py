@@ -5,31 +5,24 @@ import json
 
 import click
 
-from cli.board import BOARDS_DIR, detect_board
-from cli.errors import DevtoolError
+from cli.board import active_boards_dir, detect_board
+from cli.errors import DevtoolError, report_devtool_error
 from cli.transport.http import HttpClient, resolve_base_url
 
 
 def run(ctx_obj: dict) -> int:
     try:
         manifest = detect_board(
-            boards_dir=BOARDS_DIR,
+            boards_dir=active_boards_dir(ctx_obj.get("boards_dir")),
             override_name=ctx_obj.get("board"),
+            override_port=ctx_obj.get("port"),
         )
-        base = resolve_base_url(manifest, override=ctx_obj.get("http_url"))
+        base = resolve_base_url(manifest, override=ctx_obj.get("http_url"),
+                                port_override=ctx_obj.get("port"))
         client = HttpClient(base_url=base, timeout_s=3.0)
         payload = client.get_json("/info")
     except DevtoolError as e:
-        if ctx_obj.get("json_out"):
-            click.echo(json.dumps({
-                "error": type(e).__name__,
-                "message": str(e),
-                "next_step": e.next_step,
-            }), err=True)
-        else:
-            click.echo(f"[esp32-devtool] {e}", err=True)
-            if e.next_step:
-                click.echo(f"   next step: {e.next_step}", err=True)
+        report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
         return e.exit_code
 
     if ctx_obj.get("json_out"):

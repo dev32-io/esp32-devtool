@@ -1,5 +1,7 @@
 # esp32-devtool — Sentient Extraction Design
 
+> Historical extraction record (2026-05-24). Not current repository guidance or an executable plan. See [AGENTS.md](../../AGENTS.md) for current instructions.
+
 **Date:** 2026-05-24
 **Repo:** `github.com/dev32-io/esp32-devtool` (empty; remote configured)
 **Source:** `~/Development/sentient/.claude/worktrees/phase6-cube-sdk/esp32/devtool/` (~4500 LOC, mature)

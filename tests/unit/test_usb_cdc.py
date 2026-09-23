@@ -4,12 +4,14 @@ import json
 import socket
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
 
 from cli.board import load_manifest
-from cli.errors import VerbError
+from cli.daemon.server import CubeDaemon
+from cli.errors import DevtoolTimeout, TransportUnavailable, VerbError
 from cli.transport.usb_cdc import UsbCdcClient
 
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -67,6 +69,97 @@ def test_invoke_error_raises(short_tmp):
     c = UsbCdcClient(port=port, _auto_ensure=False)
     with pytest.raises(VerbError, match="method not found"):
         c.invoke("no.such.verb", {})
+
+
+@pytest.mark.parametrize("code, expected", [(-32001, DevtoolTimeout),
+                                               (-32002, TransportUnavailable)])
+def test_daemon_failures_have_typed_exit_codes(short_tmp, code, expected):
+    from cli.daemon.lifecycle import socket_path_for
+    port = "/dev/cu.usbmodem101"
+    _fake_daemon(socket_path_for(port), {"kind": "rsp", "json": json.dumps({
+        "jsonrpc": "2.0", "id": 1, "error": {"code": code, "message": "failure"}
+    })})
+    with pytest.raises(expected):
+        UsbCdcClient(port=port, _auto_ensure=False).invoke("state")
+
+
+def _serve_one(sock_path: Path, daemon: CubeDaemon) -> tuple[threading.Thread, list[BaseException]]:
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    srv.bind(str(sock_path))
+    srv.listen(1)
+    errors: list[BaseException] = []
+
+    def run():
+        try:
+            conn, _ = srv.accept()
+            daemon._handle_client(conn)
+        except BaseException as e:
+            errors.append(e)
+        finally:
+            srv.close()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread, errors
+
+
+def test_missing_serial_response_returns_daemon_timeout(short_tmp):
+    from cli.daemon.lifecycle import socket_path_for
+
+    port = "/dev/fake"
+    daemon = CubeDaemon(port, 60)
+
+    class SilentSerial:
+        def write(self, data):
+            time.sleep(0.15)  # Longer than command deadline; socket must still receive error.
+            return len(data)
+
+    daemon.ser = SilentSerial()
+    thread, errors = _serve_one(socket_path_for(port), daemon)
+    with pytest.raises(DevtoolTimeout, match="state: daemon response timeout"):
+        UsbCdcClient(port=port, timeout_s=0.1, _auto_ensure=False).invoke("state")
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_client_disconnect_during_serial_wait_is_clean(short_tmp):
+    from cli.daemon.lifecycle import socket_path_for
+
+    port = "/dev/fake"
+    daemon = CubeDaemon(port, 60)
+    writing = threading.Event()
+    resume = threading.Event()
+
+    class SilentSerial:
+        def write(self, data):
+            writing.set()
+            assert resume.wait(2)
+            return len(data)
+
+    daemon.ser = SilentSerial()
+    thread, errors = _serve_one(socket_path_for(port), daemon)
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            client.connect(str(socket_path_for(port)))
+            client.sendall((json.dumps({
+                "kind": "cmd", "json": json.dumps({"jsonrpc": "2.0", "id": 42,
+                                                    "method": "state", "params": {}}),
+                "timeout": 0.05,
+            }) + "\n").encode())
+            assert writing.wait(2)
+            client.shutdown(socket.SHUT_RDWR)
+    finally:
+        resume.set()
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    assert errors == []
+
+
+def test_for_manifest_rejects_ambiguous_ports(short_tmp):
+    m = load_manifest(FIXTURES / "generic-s3-devkit.yaml")
+    with pytest.raises(TransportUnavailable, match="multiple USB ports"):
+        UsbCdcClient.for_manifest(m, scan_ports=lambda g: ["/dev/one", "/dev/two"])
 
 
 def test_for_manifest_picks_port(short_tmp):

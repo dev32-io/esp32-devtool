@@ -74,7 +74,7 @@ upstream dependencies, which retain their own licenses:
 
 - `esp_http_server`, `esp_netif`: Apache-2.0 (Espressif)
 - `lvgl`: MIT
-- `cJSON` (via `espressif/cjson`): MIT
+- `cJSON` (IDF 5 built-in `json`; managed `espressif/cjson` on IDF 6): MIT
 
 Apache-2.0 requires preserving the upstream `NOTICE` file in your
 firmware's distribution. The ESP-IDF build system handles this

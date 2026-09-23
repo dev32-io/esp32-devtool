@@ -2,13 +2,13 @@
 from __future__ import annotations
 
 import json
+import os
 import struct
-from pathlib import Path
 
 import click
 
-from cli.board import BOARDS_DIR, detect_board
-from cli.errors import DevtoolError, report_devtool_error
+from cli.board import active_boards_dir, detect_board
+from cli.errors import DevtoolError, VerbError, report_devtool_error
 from cli.transport.http import HttpClient, resolve_base_url
 
 
@@ -45,18 +45,33 @@ def _rgb24_to_png(rgb24: bytes, width: int, height: int) -> bytes:
     return sig + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
+def write_private(path: str, body: bytes) -> None:
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "wb") as out:
+        os.fchmod(out.fileno(), 0o600)
+        out.write(body)
+
+
 def run(ctx_obj: dict, out_path: str | None, fmt: str) -> int:
     try:
-        manifest = detect_board(boards_dir=BOARDS_DIR,
-                                override_name=ctx_obj.get("board"))
-        base = resolve_base_url(manifest, override=ctx_obj.get("http_url"))
+        manifest = detect_board(boards_dir=active_boards_dir(ctx_obj.get("boards_dir")),
+                                override_name=ctx_obj.get("board"),
+                                override_port=ctx_obj.get("port"))
+        base = resolve_base_url(manifest, override=ctx_obj.get("http_url"),
+                                port_override=ctx_obj.get("port"))
         # 30s: 466×466×2 = 434 KB body. Cube's httpd writes via PSRAM-backed
         # snapshot buffer; observed wall time ~11s on a healthy link, but
         # post-boot first call spikes higher.
         client = HttpClient(base_url=base, timeout_s=30.0)
         body, headers = client.get_bytes("/screenshot")
-        width = int(headers.get("X-Screenshot-Width", "0"))
-        height = int(headers.get("X-Screenshot-Height", "0"))
+        try:
+            width = int(headers.get("X-Screenshot-Width", "0"))
+            height = int(headers.get("X-Screenshot-Height", "0"))
+        except ValueError as e:
+            raise VerbError("invalid screenshot dimensions") from e
+        if (width <= 0 or height <= 0 or width * height * 2 != len(body)
+                or headers.get("X-Screenshot-Format", "").lower() != "rgb565"):
+            raise VerbError("invalid RGB565 screenshot dimensions, format, or length")
     except DevtoolError as e:
         report_devtool_error(e, json_out=ctx_obj.get("json_out", False))
         return e.exit_code
@@ -72,7 +87,8 @@ def run(ctx_obj: dict, out_path: str | None, fmt: str) -> int:
 
                 from PIL import Image
             except ImportError:
-                click.echo("[esp32-devtool] JPEG requires Pillow (pip install pillow)", err=True)
+                report_devtool_error(VerbError("JPEG requires Pillow (pip install pillow)"),
+                                     json_out=ctx_obj.get("json_out", False))
                 return 5
             img = Image.frombytes("RGB", (width, height), rgb24)
             buf = BytesIO()
@@ -85,7 +101,12 @@ def run(ctx_obj: dict, out_path: str | None, fmt: str) -> int:
 
     if out_path is None:
         out_path = f"/tmp/cube-screenshot{suffix}"
-    Path(out_path).write_bytes(out_bytes)
+    try:
+        write_private(out_path, out_bytes)
+    except OSError as e:
+        report_devtool_error(VerbError(f"cannot save screenshot: {e}"),
+                             json_out=ctx_obj.get("json_out", False))
+        return 5
 
     if ctx_obj.get("json_out"):
         click.echo(json.dumps({"out": out_path, "size": len(out_bytes),

@@ -73,9 +73,7 @@ void usb_cdc_reader_task(void* /*arg*/) {
         }
         const char* json = buf + std::strlen(kCmdPrefix);
         size_t jlen = std::strlen(json);
-        ESP_LOGI(TAG, "rx-cmd len=%u head=%.60s tail=%.30s",
-                 (unsigned)jlen, json,
-                 jlen > 30 ? json + jlen - 30 : "");
+        ESP_LOGI(TAG, "rx-cmd len=%u", (unsigned)jlen);
         devtool_dispatcher_dispatch_line(json);
     }
 }

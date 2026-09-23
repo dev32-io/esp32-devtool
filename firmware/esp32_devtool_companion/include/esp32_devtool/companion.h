@@ -96,6 +96,14 @@ typedef int (*esp32_devtool_audio_inject_provider_t)(const int16_t* src,
 void esp32_devtool_set_audio_record_provider(esp32_devtool_audio_record_provider_t fn);
 void esp32_devtool_set_audio_inject_provider(esp32_devtool_audio_inject_provider_t fn);
 
+// Opt-in counted provider for HTTP injection. On success return 0 and set
+// *accepted to samples actually queued (0..samples); on failure return nonzero.
+// Unlike the legacy provider, this lets /audio/inject report ring overflow.
+typedef int (*esp32_devtool_audio_inject_counted_provider_t)(
+    const int16_t* src, size_t samples, int sample_rate, size_t* accepted);
+void esp32_devtool_set_audio_inject_counted_provider(
+    esp32_devtool_audio_inject_counted_provider_t fn);
+
 #ifdef __cplusplus
 }
 #endif

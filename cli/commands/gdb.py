@@ -197,6 +197,7 @@ def _resolve_firmware_and_elf(ctx_obj: dict) -> tuple[Path, Path] | int:
         manifest = detect_board(
             boards_dir=active_boards_dir(ctx_obj.get("boards_dir")),
             override_name=ctx_obj.get("board"),
+            override_port=ctx_obj.get("port"),
         )
     except DevtoolError as e:
         report_devtool_error(e, json_out=ctx_obj.get("json_out", False))

@@ -1,6 +1,7 @@
 ## HTTP contract
 
-Frozen wire spec. Board implementers conform. CLI assumes shape.
+Current companion behavior. Check board adapter/provider support before
+relying on an endpoint.
 
 ### `GET /info` → 200 application/json
 
@@ -27,21 +28,20 @@ Frozen wire spec. Board implementers conform. CLI assumes shape.
 }
 ```
 
-### `GET /screenshot?format=png|jpeg|rgb565`
+### `GET /screenshot`
 
 ```
 200 OK
-Content-Type: image/png | image/jpeg | application/octet-stream
+Content-Type: application/octet-stream
 X-Screenshot-Width: <int>
 X-Screenshot-Height: <int>
-X-Screenshot-Format: png|jpeg|rgb565
-X-Screenshot-Crc32: <hex>
-<binary>
+X-Screenshot-Format: rgb565
+<raw RGB565 LE bytes, chunked response>
 ```
 
-Defaults to png. JPEG quality 80 (fixed v1). rgb565 = raw; host converts.
-
-Errors: 503 (LVGL not initialized), 500 (snapshot null), 408 (encoder hang 10s).
+Host `screenshot --format rgb565` saves raw bytes; default PNG conversion
+runs on host. JPEG conversion requires Pillow. Missing snapshot provider
+returns 503. Firmware does not encode PNG/JPEG or accept a format query.
 
 ### `POST /touch`
 
@@ -61,7 +61,10 @@ X-Audio-Samples: <int>
 <raw PCM16 LE>
 ```
 
-Default 1000 ms, 16000 Hz. Max 10000 ms. Streams during capture (no full buffer).
+Default 1000 ms, 16000 Hz. Duration must be 1–1000 ms; sample rate must
+be 1000–48000 Hz (at least one sample required). Invalid query returns 400,
+not a clamped capture. Capture is synchronous into a PSRAM buffer; HTTP
+sends chunks **after** capture. Board provider may apply its own limit.
 
 ### `POST /audio/inject`
 
@@ -71,7 +74,24 @@ Content-Type: audio/L16; rate=16000; channels=1
 200 → {"ok": true, "samples": <int>}
 ```
 
-No 32 KB cap (was the USB-CDC verb's b64 limit).
+Body must be nonempty, even-length PCM16 at exactly 16000 Hz mono and at
+most 2 MiB; it is buffered in PSRAM. Invalid length/format is rejected.
+Provider feeds microphone injection ring, not speaker playback. `samples`
+reports samples **actually queued**: full acceptance returns 200 with
+`{"ok":true,"samples":N}`; partial acceptance returns 409 with
+`{"ok":false,"samples":accepted}`. Missing or failed counted provider returns
+503 with `{"ok":false,"samples":0}`. Host `--json audio inject` reports a
+validated 409 as `{"error":"audio injection partially accepted","exit_code":5,
+"samples":accepted,"requested_samples":N}` with exit status 5. It does not
+retry automatically. Invalid response counts are not reported as accepted.
+
+Board adapters using legacy `esp32_devtool_set_audio_inject_provider` must
+register `esp32_devtool_set_audio_inject_counted_provider` for HTTP injection.
+Counted callback returns 0 and writes actual queued count via `accepted`;
+legacy callback alone no longer handles this endpoint (503). No automatic
+fallback, since legacy callback cannot report partial ring acceptance.
+Separate USB-CDC `audio play` uses `audio.play_pcm` when firmware exposes
+that verb.
 
 ### Log relay (device → host)
 
@@ -83,17 +103,18 @@ UDP datagrams, NDJSON one line per packet:
 
 Devtool's `logs --source udp` binds the host-side port to receive.
 
-### Headers (all endpoints)
+### Version header (`/info`)
 
 ```
 X-Devtool-Version: <semver>
 ```
 
-CLI warns on major mismatch.
+Current host does not enforce or warn on version mismatch.
 
 ### Contract versioning
 
-`contract_version` in `/info`. CLI requires `^MAJOR.MINOR`. Loud error on mismatch.
+`contract_version` in `/info` reports firmware contract version. Host does
+not currently validate it.
 
 ### Authentication
 

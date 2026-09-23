@@ -40,8 +40,10 @@ managed by hand.
 ### Why HTTP for screenshot/touch/audio?
 
 ESP32-S3 USB-Serial-JTAG drops bytes when the host stalls under burst.
-Streaming a 200KB PNG over USB-CDC fails reliably; over HTTP it just works.
-Same firmware exposes both surfaces; the CLI picks per capability.
+The companion sends raw RGB565 over HTTP; the host converts to PNG/JPEG.
+Audio record captures into a buffer before chunked HTTP send. Audio inject
+buffers a PCM request for the microphone injection path, not the speaker.
+`audio play` remains a separate USB-CDC firmware verb.
 
 ## Firmware companion architecture
 
@@ -54,10 +56,10 @@ esp32_devtool_companion (idf component)
   ├── log_relay.cc — UDP datagram shipper (post-WiFi)
   └── handlers/
        ├── info.cc — GET /info
-       ├── screenshot.cc — GET /screenshot (PNG/JPEG/rgb565)
+       ├── screenshot.cc — GET /screenshot (raw RGB565)
        ├── touch.cc — POST /touch (synthetic LVGL indev event)
-       ├── audio_record.cc — GET /audio/record (PCM16 stream)
-       └── audio_inject.cc — POST /audio/inject (PCM16 stream)
+       ├── audio_record.cc — GET /audio/record (buffered PCM16 mic capture)
+       └── audio_inject.cc — POST /audio/inject (buffered PCM16 mic injection)
 ```
 
 ### Master switch + per-endpoint Kconfig
@@ -90,8 +92,8 @@ The stub provides no-op versions of both, so caller code is unconditional
   framing. JSON payloads. Backwards compatible with the legacy
   `agent_console` protocol that predated devtool.
 - **HTTP**: standard `application/json` for control endpoints, binary
-  content-types (`image/png`, `audio/L16`) for media. Headers carry
-  metadata (`X-Screenshot-Width`, `X-Audio-Samples`).
+  content-types (`application/octet-stream` RGB565, `audio/L16` PCM) for
+  media. Headers carry metadata (`X-Screenshot-Width`, `X-Audio-Samples`).
 - **UDP log relay**: NDJSON datagrams from device to host, one log line
   per datagram. CLI `logs --source udp` binds the listener.
 
@@ -99,10 +101,8 @@ Full wire spec: [docs/HTTP-CONTRACT.md](HTTP-CONTRACT.md).
 
 ## Contract versioning
 
-`/info` returns `contract_version` (semver). CLI requires `^MAJOR.MINOR`.
-Mismatches produce a loud error rather than silent misbehavior. Bump
-MAJOR when a wire change is incompatible (e.g. renamed endpoint, removed
-field).
+`/info` returns `contract_version`. Current host does not enforce version
+compatibility; inspect firmware and host behavior before depending on a change.
 
 ## Why this shape (and not adb/esptool/idf.py)?
 

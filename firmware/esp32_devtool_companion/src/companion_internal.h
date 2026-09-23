@@ -8,6 +8,8 @@ int esp32_devtool_get_snapshot(esp32_devtool_snapshot_t* out);
 int esp32_devtool_invoke_touch(int x, int y, int hold_ms);
 int esp32_devtool_invoke_audio_record(int16_t* dst, size_t samples, int sample_rate);
 int esp32_devtool_invoke_audio_inject(const int16_t* src, size_t samples, int sample_rate);
+int esp32_devtool_invoke_audio_inject_counted(const int16_t* src, size_t samples,
+                                            int sample_rate, size_t* accepted);
 #ifdef __cplusplus
 }
 #endif

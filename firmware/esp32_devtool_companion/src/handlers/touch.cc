@@ -1,8 +1,9 @@
 #include <cJSON.h>
 #include <esp_http_server.h>
 #include <esp_log.h>
-#include <algorithm>
 #include <cstring>
+#include <cmath>
+#include <limits>
 
 #include "esp32_devtool/companion.h"
 #include "esp32_devtool/endpoints.h"
@@ -18,6 +19,13 @@ static constexpr int kDefaultHoldMs = 60;
 // Max body size accepted. /touch payloads are tiny JSON objects
 // ({"x":N,"y":N,"hold_ms":N}); cap at 128 bytes — anything larger is malformed.
 static constexpr int kMaxBodyBytes = 128;
+static constexpr int kMaxHoldMs = 10000;
+
+static bool integer_in_range(const cJSON* value, int min, int max) {
+    return cJSON_IsNumber(value) && std::isfinite(value->valuedouble) &&
+           value->valuedouble >= min && value->valuedouble <= max &&
+           value->valuedouble == static_cast<int>(value->valuedouble);
+}
 
 static esp_err_t touch_handler(httpd_req_t* req) {
     ESP_LOGD(TAG, "POST /touch content_len=%d", req->content_len);
@@ -27,35 +35,48 @@ static esp_err_t touch_handler(httpd_req_t* req) {
         return ESP_OK;
     }
     char buf[kMaxBodyBytes];
-    int to_read = std::min<int>(kMaxBodyBytes - 1, req->content_len);
-    int len = httpd_req_recv(req, buf, to_read);
-    if (len <= 0) {
-        httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"empty_body\"}");
-        return ESP_OK;
+    int len = 0;
+    while (len < req->content_len) {
+        int n = httpd_req_recv(req, buf + len, req->content_len - len);
+        if (n <= 0) {
+            httpd_resp_set_status(req, "400 Bad Request");
+            httpd_resp_sendstr(req, "{\"error\":\"incomplete_body\"}");
+            return ESP_OK;
+        }
+        len += n;
     }
     buf[len] = 0;
 
-    cJSON* j = cJSON_Parse(buf);
-    if (j == nullptr) {
-        ESP_LOGW(TAG, "bad_json: '%.*s'", len, buf);
+    cJSON* j = cJSON_ParseWithLengthOpts(buf, len + 1, nullptr, true);
+    if (j == nullptr || !cJSON_IsObject(j)) {
+        cJSON_Delete(j);
         httpd_resp_set_status(req, "400 Bad Request");
         httpd_resp_sendstr(req, "{\"error\":\"bad_json\"}");
         return ESP_OK;
     }
-    cJSON* jx = cJSON_GetObjectItem(j, "x");
-    cJSON* jy = cJSON_GetObjectItem(j, "y");
-    if (!cJSON_IsNumber(jx) || !cJSON_IsNumber(jy)) {
-        cJSON_Delete(j);
+    cJSON* jx = cJSON_GetObjectItemCaseSensitive(j, "x");
+    cJSON* jy = cJSON_GetObjectItemCaseSensitive(j, "y");
+    cJSON* jhold = cJSON_GetObjectItemCaseSensitive(j, "hold_ms");
+    bool valid = integer_in_range(jx, 0, std::numeric_limits<int>::max()) &&
+                 integer_in_range(jy, 0, std::numeric_limits<int>::max()) &&
+                 (jhold == nullptr || integer_in_range(jhold, 1, kMaxHoldMs));
+    int x_count = 0, y_count = 0, hold_count = 0;
+    for (cJSON* item = j->child; item != nullptr; item = item->next) {
+        if (std::strcmp(item->string, "x") == 0) ++x_count;
+        else if (std::strcmp(item->string, "y") == 0) ++y_count;
+        else if (std::strcmp(item->string, "hold_ms") == 0) ++hold_count;
+        else valid = false;
+    }
+    valid = valid && x_count == 1 && y_count == 1 && hold_count <= 1;
+    int x = valid ? jx->valueint : 0;
+    int y = valid ? jy->valueint : 0;
+    int hold_ms = jhold ? jhold->valueint : kDefaultHoldMs;
+    cJSON_Delete(j);
+    if (!valid) {
         httpd_resp_set_status(req, "400 Bad Request");
-        httpd_resp_sendstr(req, "{\"error\":\"missing_xy\"}");
+        httpd_resp_sendstr(req, "{\"error\":\"bad_touch_params\"}");
         return ESP_OK;
     }
-    int x = jx->valueint;
-    int y = jy->valueint;
-    cJSON* jhold = cJSON_GetObjectItem(j, "hold_ms");
-    int hold_ms = (jhold && cJSON_IsNumber(jhold)) ? jhold->valueint : kDefaultHoldMs;
-    cJSON_Delete(j);
 
     ESP_LOGI(TAG, "invoke x=%d y=%d hold_ms=%d", x, y, hold_ms);
     int rc = esp32_devtool_invoke_touch(x, y, hold_ms);

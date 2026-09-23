@@ -11,13 +11,13 @@ from cli.board import BoardManifest
 from cli.errors import TransportUnavailable
 
 
-def _discover_ip_via_usb(manifest: BoardManifest) -> str:
+def _discover_ip_via_usb(manifest: BoardManifest, port_override: str | None = None) -> str:
     """Issue a USB-CDC `state` verb to discover the cube's IP.
 
     Imported lazily to avoid circular import; full impl in transport/usb_cdc.py.
     """
     from cli.transport.usb_cdc import UsbCdcClient
-    client = UsbCdcClient.for_manifest(manifest)
+    client = UsbCdcClient.for_manifest(manifest, port_override=port_override)
     result = client.invoke("state", {})
     ip = result.get("ip") or result.get("wifi", {}).get("ip")
     if not ip:
@@ -28,7 +28,8 @@ def _discover_ip_via_usb(manifest: BoardManifest) -> str:
     return ip
 
 
-def resolve_base_url(manifest: BoardManifest, *, override: str | None) -> str:
+def resolve_base_url(manifest: BoardManifest, *, override: str | None,
+                     port_override: str | None = None) -> str:
     if override:
         return override
     if not manifest.http.enabled:
@@ -45,7 +46,7 @@ def resolve_base_url(manifest: BoardManifest, *, override: str | None) -> str:
             )
         return f"http://{host}:{manifest.http.port}"
     if manifest.http.discover_via == "usb-info":
-        ip = _discover_ip_via_usb(manifest)
+        ip = _discover_ip_via_usb(manifest, port_override)
         return f"http://{ip}:{manifest.http.port}"
     if manifest.http.discover_via == "mdns":
         raise TransportUnavailable("mdns discovery not implemented in v1")
@@ -64,7 +65,10 @@ class HttpClient:
             raise TransportUnavailable(f"HTTP {path} → {type(e).__name__}: {e}")
         if r.status_code != 200:
             raise TransportUnavailable(f"HTTP {path} → {r.status_code}")
-        return r.json()
+        try:
+            return r.json()
+        except ValueError as e:
+            raise TransportUnavailable(f"HTTP {path} returned invalid JSON") from e
 
     def get_bytes(self, path: str, *, accept: str | None = None) -> tuple[bytes, dict]:
         headers = {"Accept": accept} if accept else {}
@@ -84,9 +88,23 @@ class HttpClient:
                               timeout=self.timeout_s)
         except (requests.Timeout, requests.ConnectionError) as e:
             raise TransportUnavailable(f"HTTP POST {path} → {type(e).__name__}: {e}")
+        if r.status_code == 409 and path == "/audio/inject":
+            try:
+                result = r.json()
+            except ValueError:
+                result = None
+            requested = len(body) // 2
+            if (not isinstance(result, dict) or result.get("ok") is not False
+                    or type(result.get("samples")) is not int
+                    or not 0 <= result["samples"] < requested or len(body) % 2):
+                raise TransportUnavailable("HTTP POST /audio/inject → 409 (invalid sample count)")
+            return {"ok": False, "samples": result["samples"]}
         if r.status_code != 200:
             raise TransportUnavailable(f"HTTP POST {path} → {r.status_code}")
-        return r.json()
+        try:
+            return r.json()
+        except ValueError as e:
+            raise TransportUnavailable(f"HTTP POST {path} returned invalid JSON") from e
 
     def post_json(self, path: str, payload: dict) -> dict[str, Any]:
         body = json_mod.dumps(payload).encode()

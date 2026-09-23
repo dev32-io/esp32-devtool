@@ -32,7 +32,7 @@ opinionated: only generic, broadly-applicable manifests live there.
 2. Register it in `cli/main.py` via `@cli.command()`.
 3. Add unit tests under `tests/unit/test_<command>.py` that mock the
    transport layer.
-4. Update `CLAUDE.md` and `README.md` command table.
+4. Update `AGENTS.md` and `README.md` if invocation guidance changes.
 5. Open a PR.
 
 ## TDD is the norm
@@ -73,7 +73,7 @@ Conventional Commits:
 
 Body answers *why*, not *what* (the diff shows what).
 
-## If you use Claude Code
+## Agent guidance
 
-Start with [CLAUDE.md](CLAUDE.md). It's the agent-facing entry point
-and codifies the invocation patterns + exit-code semantics.
+Start with [AGENTS.md](AGENTS.md) for repository conventions and CLI usage.
+The historical extraction spec and plan are not current implementation instructions.

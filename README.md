@@ -9,28 +9,14 @@ over USB and AI coding agents driving the same board over JSON.
 
 ## Why
 
-ESP32 dev loops commonly use `espressif` official `idf.py` Python helpers.
-Once an LLM agent enters the loop, the main issues are 
-1. agent is unable to get instant visual feedback (screenshot)
-2. agent is unable to send arbitrary touch-event, *large* binary payload over the USB protocol
-3. agent needs to understand and figure aginast different parameter structure used by the scripts
-   
-These constantly block the agent from working autonomously, requiring human in the loop to manually interact with the hardware (touch, eye ball check), which is unproductive. 
-
-`esp32-devtool` collapses them into one tool with:
-
-- **Consistent grammar**: `esp32-devtool [global flags] <command> [args]`.
-- **Stable exit codes + `--json` output** so agents can branch on
-  results without parsing human text.
-- **Capability-driven transport routing**: each verb declares whether
-  it goes over USB-CDC or HTTP, based on a per-board YAML manifest.
-- **Auto-managed serial daemon**: no fighting over a single-owner port.
-- **Firmware companion component**: drops into any ESP-IDF project,
-  zero-cost in production builds (master Kconfig switch).
+Use one CLI for board inspection, firmware flashing, logs, touch, screenshots,
+audio, and firmware verbs. Board manifests specify available capabilities;
+HTTP media endpoints require a running companion and board-specific providers.
+Global options go before the command (`esp32-devtool --json info`).
 
 ## Install
 
-### From PyPI
+### From PyPI (when published)
 
 ```bash
 pipx install esp32-devtool
@@ -55,7 +41,7 @@ The `bin/esp32-devtool` shim uses [uv](https://github.com/astral-sh/uv)
 to resolve deps from the PEP-723 header in `cli/main.py` — no venv setup
 needed.
 
-### Firmware companion
+### Firmware companion (when available in ESP Component Registry)
 
 ```bash
 cd <your-esp-idf-project>
@@ -103,46 +89,43 @@ esp32-devtool cmd state
 
 ## Quick start — agent workflow
 
-Same binary, `--json` flag, branch on exit codes:
-
 ```bash
-# 0=ok, 3=no board, 4=transport down, 6=timeout
-esp32-devtool info --json | jq -r '.firmware'
-
-# Verify capability before assuming
-esp32-devtool info --json | jq -r '.capabilities | contains(["screenshot"])'
-
-# Loop: flash → wait → assert state
-esp32-devtool flash --profile debug --json && \
-  sleep 2 && \
-  esp32-devtool cmd state --json | jq -e '.state == "ready"'
+esp32-devtool --help                # text help; no JSON help mode
+esp32-devtool --json info           # check exit status before parsing
+esp32-devtool --json cmd state      # if board manifest exposes state verb
 ```
 
-Full pattern guide: [docs/AGENTIC-WORKFLOW.md](docs/AGENTIC-WORKFLOW.md).
-Agent invocation rules: [CLAUDE.md](CLAUDE.md).
+`--json` is a global option, not a subcommand option. Exit codes: 0 success,
+2 usage, 3 board missing, 4 transport unavailable, 5 verb error, 6 timeout.
+JSON output shape varies by command; no blanket CLI JSON stability guarantee.
+Use `--boards-dir` or `ESP32_DEVTOOL_BOARDS_DIR` for alternate manifests.
+Set the environment variable before launch to register project extensions.
+Verify intended manifest,
+USB port and HTTP target before device mutations; stop if selection is unclear.
+See [agent workflow](docs/AGENTIC-WORKFLOW.md) and [repository guidance](AGENTS.md).
 
 ## Capabilities
 
 | Command | Transport | Description |
 |---|---|---|
-| `info` | HTTP / USB-CDC | Device info, capabilities, firmware version |
+| `info` | HTTP | Device info, capabilities, firmware version |
 | `flash` | USB-CDC | Build + flash firmware (debug or prod profile) |
 | `logs` | USB / UDP | Stream device logs; filter by tag or level |
-| `screenshot` | HTTP | Capture display frame as PNG / JPEG / rgb565 |
+| `screenshot` | HTTP | Get raw RGB565 over HTTP; host saves raw or converts to PNG / JPEG (Pillow needed for JPEG) |
 | `cmd` | USB-CDC | Dispatch JSON-RPC verb to firmware |
 | `touch` | HTTP | Inject synthetic touch event at (x, y) |
-| `audio record` | HTTP | Record PCM16 audio from device microphone |
-| `audio inject` | HTTP | Push PCM16 audio into device speaker path |
-| `audio play` | USB-CDC | Play short PCM clip from device |
-| `gdb` | USB-CDC | Attach GDB; decode panic backtraces |
+| `audio record` | HTTP | Capture buffered PCM16 audio from device microphone |
+| `audio inject` | HTTP | Push PCM16 audio into microphone injection path |
+| `audio play` | USB-CDC | Play PCM clip via audio.play_pcm verb, when available |
+| `gdb` | USB-CDC | Attach GDB |
 | `daemon` | local | Manage the background USB-CDC proxy daemon |
-| `ui dump-tree` | HTTP | LVGL widget tree JSON |
+| `ui dump-tree` | USB-CDC | LVGL widget tree JSON via board-provided `ui.dump_tree` verb |
 | `audit-prod-strip` | local | Verify no devtool symbols leak into prod ELF |
 
 ## Docs
 
-- [CLAUDE.md](CLAUDE.md) — agent-facing rules (invocation, exit codes).
-- [docs/AGENTIC-WORKFLOW.md](docs/AGENTIC-WORKFLOW.md) — agent loop patterns + worked example.
+- [AGENTS.md](AGENTS.md) — repository guidance (invocation, checks).
+- [docs/AGENTIC-WORKFLOW.md](docs/AGENTIC-WORKFLOW.md) — agent loop patterns.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) — system design.
 - [docs/HTTP-CONTRACT.md](docs/HTTP-CONTRACT.md) — wire spec.
 - [docs/BOARD-MANIFEST.md](docs/BOARD-MANIFEST.md) — manifest schema.
@@ -156,10 +139,9 @@ MIT. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
 All runtime + firmware dependencies are permissively licensed (MIT, BSD,
 Apache-2.0). CI enforces this — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Built with Claude Code
+## Origin
 
-esp32-devtool is designed to be a first-class tool for agentic ESP32
-development, and it was built using [Claude Code](https://claude.com/claude-code)
-as a daily-driver collaborator. The [CLAUDE.md](CLAUDE.md) at the repo
-root is both how I worked with Claude on this codebase and how you can
-have your own Claude Code (or any other LLM agent) drive it.
+Developed with Claude Code during initial extraction from Sentient. Historical
+[design](docs/specs/2026-05-24-sentient-extraction-design.md) and
+[plan](docs/superpowers/plans/2026-05-24-sentient-extraction-plan.md) record that work;
+they are not current implementation instructions.

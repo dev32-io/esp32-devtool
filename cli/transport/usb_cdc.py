@@ -5,6 +5,7 @@ import glob as glob_mod
 import itertools
 import json
 import socket
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -48,6 +49,11 @@ class UsbCdcClient:
                     f"no ports matched {glob_pat}",
                     next_step="check USB cable + `ls /dev/cu.usbmodem*`",
                 )
+            if len(ports) > 1:
+                raise TransportUnavailable(
+                    f"multiple USB ports match {glob_pat}: {ports}",
+                    next_step="pass --port <path> to select the target",
+                )
             port = ports[0]
         return cls(port=port)
 
@@ -58,15 +64,23 @@ class UsbCdcClient:
         req_id = _next_id()
         json_rpc = {"jsonrpc": "2.0", "id": req_id, "method": method,
                     "params": params or {}}
-        wire = {"kind": "cmd", "json": json.dumps(json_rpc)}
+        wire = {"kind": "cmd", "json": json.dumps(json_rpc), "timeout": self.timeout_s}
 
+        # Daemon budget starts after socket delivery; leave room for serial write
+        # (up to 1s) and scheduling before its typed timeout can reach us.
+        deadline = time.monotonic() + self.timeout_s + 2.0
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(self.timeout_s)
         try:
+            s.settimeout(max(deadline - time.monotonic(), 0.001))
             s.connect(str(sock_path))
+            s.settimeout(max(deadline - time.monotonic(), 0.001))
             s.sendall((json.dumps(wire) + "\n").encode())
             chunks: list[bytes] = []
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                s.settimeout(remaining)
                 c = s.recv(65536)
                 if not c:
                     break
@@ -78,6 +92,8 @@ class UsbCdcClient:
                 f"daemon timeout {self.timeout_s}s on '{method}'",
                 next_step="try `esp32-devtool restart` or physical recovery",
             ) from e
+        except OSError as e:
+            raise TransportUnavailable(f"daemon unavailable for '{method}': {e}") from e
         finally:
             s.close()
 
@@ -85,12 +101,19 @@ class UsbCdcClient:
         try:
             envelope = json.loads(raw)
         except json.JSONDecodeError as e:
-            raise VerbError(f"daemon returned non-JSON: {raw[:120]!r}") from e
+            raise VerbError("daemon returned non-JSON response") from e
         if envelope.get("kind") != "rsp":
-            raise VerbError(f"unexpected envelope kind: {envelope}")
-        payload = json.loads(envelope["json"])
+            raise VerbError("unexpected daemon envelope kind")
+        try:
+            payload = json.loads(envelope["json"])
+        except (KeyError, ValueError, TypeError) as e:
+            raise VerbError("daemon returned malformed response") from e
         if "error" in payload:
             err = payload["error"]
+            if err.get("code") == -32001:
+                raise DevtoolTimeout(f"{method}: daemon response timeout")
+            if err.get("code") == -32002:
+                raise TransportUnavailable(f"{method}: serial disconnected")
             raise VerbError(
                 f"{method}: {err.get('message', 'unknown')} "
                 f"(code {err.get('code')})"

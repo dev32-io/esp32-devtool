@@ -72,6 +72,17 @@ def test_detect_board_ambiguous_raises(tmp_path):
                      scan_ports=lambda glob: ["/dev/cu.usbmodem101"])
 
 
+def test_detect_board_rejects_two_ports_for_one_manifest(tmp_path):
+    (tmp_path / "generic-s3-devkit.yaml").write_text(
+        (FIXTURES / "generic-s3-devkit.yaml").read_text()
+    )
+    ports = ["/dev/cu.usbmodem101", "/dev/cu.usbmodem201"]
+    with pytest.raises(BoardNotFound, match="multiple boards or ports"):
+        detect_board(boards_dir=tmp_path, override_name=None, scan_ports=lambda g: ports)
+    assert detect_board(boards_dir=tmp_path, override_name=None,
+                        override_port=ports[1], scan_ports=lambda g: ports).name == "generic-s3-devkit"
+
+
 def test_load_manifest_parses_http_enabled():
     """Cover the http.enabled=True branch of the YAML loader (was previously
     covered by the cube fixture before generic-s3-devkit replaced it)."""
