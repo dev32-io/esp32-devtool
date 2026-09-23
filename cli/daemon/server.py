@@ -102,20 +102,27 @@ class CubeDaemon:
     def send_cmd(self, body: dict, rpc_id, timeout: float) -> dict:
         # Mark a baseline sentinel in the ring so we can find our cutoff
         # without index arithmetic against a maxlen-bounded deque.
+        deadline = time.monotonic() + timeout
+        timed_out = {
+            "jsonrpc": "2.0", "id": rpc_id,
+            "error": {"code": -32001, "message": f"daemon timeout after {timeout}s"},
+        }
         sentinel = f"__sentinel__ {time.time()}"
         with self.read_lock:
             self.event_log.append(sentinel)
         line = ">>> CMD " + json.dumps(body) + "\n"
+        if not self.serial_lock.acquire(timeout=max(0, deadline - time.monotonic())):
+            return timed_out
         try:
-            with self.serial_lock:
-                if self.ser is None:
-                    raise serial.SerialException("serial disconnected")
-                self.ser.write(line.encode())
+            if self.ser is None:
+                raise serial.SerialException("serial disconnected")
+            self.ser.write(line.encode())
         except (serial.SerialException, OSError):
             return {"jsonrpc": "2.0", "id": rpc_id,
                     "error": {"code": -32002, "message": "serial disconnected"}}
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        finally:
+            self.serial_lock.release()
+        while time.monotonic() < deadline:
             with self.read_lock:
                 snapshot = list(self.event_log)
             try:
@@ -133,11 +140,7 @@ class CubeDaemon:
                 if resp.get("id") == rpc_id:
                     return resp
             time.sleep(0.05)
-        return {
-            "jsonrpc": "2.0",
-            "id": rpc_id,
-            "error": {"code": -32001, "message": f"daemon timeout after {timeout}s"},
-        }
+        return timed_out
 
     def get_recent_events(self, n: int = 200) -> list[str]:
         with self.read_lock:
@@ -285,6 +288,9 @@ class CubeDaemon:
             else:
                 conn.sendall(json.dumps({"error": f"unknown kind: {kind}"}).encode())
             self.last_activity = time.time()
+        except (BrokenPipeError, ConnectionResetError):
+            # Client left before response; no payload or traceback belongs in daemon logs.
+            pass
         finally:
             conn.close()
 

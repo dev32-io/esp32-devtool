@@ -5,6 +5,7 @@ import glob as glob_mod
 import itertools
 import json
 import socket
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -63,15 +64,23 @@ class UsbCdcClient:
         req_id = _next_id()
         json_rpc = {"jsonrpc": "2.0", "id": req_id, "method": method,
                     "params": params or {}}
-        wire = {"kind": "cmd", "json": json.dumps(json_rpc)}
+        wire = {"kind": "cmd", "json": json.dumps(json_rpc), "timeout": self.timeout_s}
 
+        # Daemon budget starts after socket delivery; leave room for serial write
+        # (up to 1s) and scheduling before its typed timeout can reach us.
+        deadline = time.monotonic() + self.timeout_s + 2.0
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(self.timeout_s)
         try:
+            s.settimeout(max(deadline - time.monotonic(), 0.001))
             s.connect(str(sock_path))
+            s.settimeout(max(deadline - time.monotonic(), 0.001))
             s.sendall((json.dumps(wire) + "\n").encode())
             chunks: list[bytes] = []
             while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError
+                s.settimeout(remaining)
                 c = s.recv(65536)
                 if not c:
                     break
