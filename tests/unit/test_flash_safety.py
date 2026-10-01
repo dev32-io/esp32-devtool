@@ -179,3 +179,28 @@ def test_idf_failure_does_not_report_process_output(monkeypatch, tmp_path, capsy
     output = capsys.readouterr()
     assert json.loads(output.out)["exit_code"] == 5
     assert "private" not in output.out + output.err
+
+
+@pytest.mark.parametrize("state,status,expected", [
+    ("IDLE", {}, True),
+    ("UNKNOWN", {"phase": "bootstrap", "fatal": False, "lastError": "", "bleActive": True}, True),
+    ("UNKNOWN", {"phase": "bootstrap", "fatal": True, "lastError": "", "bleActive": True}, False),
+    ("UNKNOWN", {"phase": "bootstrap", "fatal": False, "lastError": "storage", "bleActive": True}, False),
+    ("UNKNOWN", {"phase": "bootstrap", "fatal": False, "lastError": "", "bleActive": False}, False),
+    ("UNKNOWN", {"phase": "active", "fatal": False, "lastError": "", "bleActive": True}, False),
+    ("UNKNOWN", {}, False),
+    ("STARTING", {}, False),
+])
+def test_flash_readiness_includes_healthy_unenrolled_cube(monkeypatch, state, status, expected):
+    ticks = iter([0, 0, 21])  # One bounded check, then deadline. No real sleep/device.
+    monkeypatch.setattr(flash.time, "time", lambda: next(ticks))
+    monkeypatch.setattr(flash.time, "sleep", lambda _: None)
+    verbs = []
+
+    def invoke(verb):
+        verbs.append(verb)
+        return {"state": state} if verb == "state" else status
+
+    monkeypatch.setattr(flash, "UsbCdcClient", lambda **kw: SimpleNamespace(invoke=invoke))
+    assert flash._wait_for_settled_state("/dev/test") is expected
+    assert verbs == (["state", "cube.hardware.status"] if state == "UNKNOWN" else ["state"])
