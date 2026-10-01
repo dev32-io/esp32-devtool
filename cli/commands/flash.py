@@ -105,12 +105,19 @@ _STATE_SETTLE_TIMEOUT_S = 20.0
 
 
 def _wait_for_settled_state(port: str) -> bool:
-    """Poll ``state`` until the cube leaves pre-WiFi states."""
+    """Accept a settled app or a healthy, unenrolled cube ready for BLE setup."""
     client = UsbCdcClient(port=port, timeout_s=3.0)
     deadline = time.time() + _STATE_SETTLE_TIMEOUT_S
     while time.time() < deadline:
         try:
             state = client.invoke("state").get("state")
+            if state == "UNKNOWN":
+                status = client.invoke("cube.hardware.status")
+                if (status.get("phase") == "bootstrap"
+                        and status.get("fatal") is False
+                        and status.get("lastError") == ""
+                        and status.get("bleActive") is True):
+                    return True
         except DevtoolError:
             state = None
         if state and state not in _PRE_WIFI_STATES:
@@ -137,8 +144,8 @@ def _respawn_daemon_and_wait_ready(port: str) -> None:
         )
     if not _wait_for_settled_state(port):
         raise DevtoolTimeout(
-            f"cube stayed in pre-WiFi state for {_STATE_SETTLE_TIMEOUT_S}s after READY",
-            next_step="inspect WiFi creds",
+            f"cube did not reach application or BLE setup readiness within {_STATE_SETTLE_TIMEOUT_S}s",
+            next_step="inspect bounded cube.hardware.status; do not blindly reflash",
         )
 
 
